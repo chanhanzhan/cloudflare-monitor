@@ -5,7 +5,7 @@ const languages = {
     zh: {
         // Dashboard
         dashboardTitle: 'Cloudflare流量分析仪表盘',
-        noData: '暂无数据',
+        noData: '暂无数据，请检查配置或稍后再试。',
 
         // Period Selector
         singleDay: '单日数据',
@@ -83,7 +83,7 @@ const languages = {
         countryRegion: '国家/地区',
         bandwidth: '带宽',
         noGeographyData: '暂无地理位置数据',
-        
+
         // 移动端简化标签(保持准确性)
         countryShort: '国家/地区',
         requestsShort: '请求',
@@ -92,7 +92,7 @@ const languages = {
     en: {
         // Dashboard
         dashboardTitle: 'Cloudflare Traffic Analytics Dashboard',
-        noData: 'No Data Available',
+        noData: 'No Data Available,Please check the configuration or try again later.',
 
         // Period Selector
         singleDay: '1 Day',
@@ -170,7 +170,7 @@ const languages = {
         countryRegion: 'Country/Region',
         bandwidth: 'Bandwidth',
         noGeographyData: 'No geography data available',
-        
+
         // 移动端简化标签(保持准确性)
         countryShort: 'Country/Region',
         requestsShort: 'Requests',

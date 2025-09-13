@@ -78,7 +78,7 @@ function AppContent() {
       <div className="app-container empty">
         <div className="empty-content">
           <h2>{t('dashboardTitle')}</h2>
-          <p>{t('noData')}，请检查配置或稍后再试。</p>
+          <p>{t('noData')}</p>
         </div>
       </div>
     );
