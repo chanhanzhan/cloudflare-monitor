@@ -20,7 +20,7 @@ function AppContent() {
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [selectedPeriod, setSelectedPeriod] = useState('3days'); // 单日、3天、7天
+  const [selectedPeriod, setSelectedPeriod] = useState('1day'); // 单日、3天、7天
 
   useEffect(() => {
     // 使用相对路径，通过nginx反向代理访问

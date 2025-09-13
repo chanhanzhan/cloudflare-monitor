@@ -27,10 +27,10 @@ const CFLineChart = ({ domain, raw, rawHours, selectedPeriod }) => {
     grid: isDarkMode ? '#404040' : '#f0f0f0',
     // 图表线条颜色
     lineColors: {
-      requests: '#667eea',
-      cachedRequests: '#764ba2', 
-      bytes: '#f093fb',
-      threats: '#ff6b6b'
+      requests: '#2563eb',     // 蓝色
+      cachedRequests: '#4ec0e4', // 橙色
+      bytes: '#10b981',        // 绿色
+      threats: '#ef4444'       // 红色
     }
   };
   

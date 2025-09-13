@@ -1,5 +1,5 @@
 import React from 'react';
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useTheme } from '../contexts/ThemeContext';
 
@@ -24,8 +24,8 @@ const CacheStats = ({
     border: isDarkMode ? '#404040' : '#e1e1e1'
   };
   
-  // 饼状图颜色配置
-  const colors = ['#667eea', '#f093fb'];
+  // 饼状图颜色配置 - 与折线图颜色保持一致
+  const colors = ['#2563eb', '#4ec0e4']; // 蓝色系，与折线图的requests和cachedRequests颜色对应
   
   // 请求缓存数据
   const requestsData = [
@@ -113,7 +113,7 @@ const CacheStats = ({
                   data={requestsData}
                   cx={80}
                   cy={80}
-                  innerRadius={40}
+                  innerRadius={0}
                   outerRadius={70}
                   paddingAngle={2}
                   dataKey="value"
@@ -161,7 +161,7 @@ const CacheStats = ({
                   data={bytesData}
                   cx={80}
                   cy={80}
-                  innerRadius={40}
+                  innerRadius={0}
                   outerRadius={70}
                   paddingAngle={2}
                   dataKey="value"

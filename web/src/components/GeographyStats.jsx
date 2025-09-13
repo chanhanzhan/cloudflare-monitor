@@ -27,10 +27,10 @@ const GeographyStats = ({ data, formatNumber, formatBytes }) => {
     textSecondary: isDarkMode ? '#b0b0b0' : '#666666',
     border: isDarkMode ? '#404040' : '#e1e1e1',
     grid: isDarkMode ? '#404040' : undefined, // 深色模式使用更明显的网格
-    // 图表颜色保持一致
+    // 图表颜色与折线图保持一致
     chartColors: {
-      requests: '#667eea',
-      bandwidth: '#764ba2'
+      requests: '#2563eb',    // 蓝色 - 与折线图requests颜色一致
+      bandwidth: '#10b981'    // 绿色 - 与折线图bytes颜色一致
     }
   };
   
