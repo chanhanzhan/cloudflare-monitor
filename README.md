@@ -45,7 +45,7 @@
 
 ```bash
 # 克隆项目
-git clone https://github.com/chanhanzhan/cloudflare-monitor.git
+git clone https://github.com/XxxXTeam/cloudflare-monitor.git
 cd cloudflare-monitor
 
 # 安装依赖
@@ -57,10 +57,10 @@ pnpm install
 1. 复制环境变量示例文件：
 
 ```bash
-cp .env.demo .env.local
+cp .env.demo .env
 ```
 
-2. 编辑 `.env.local` 文件，配置你的 API 密钥：
+2. 编辑 `.env` 文件，配置你的 API 密钥：
 
 #### Cloudflare 配置
 
@@ -245,17 +245,8 @@ pnpm build
 
 ## 📮 联系方式
 
-- 作者: Geekertao
-- 项目地址: [https://github.com/chanhanzhan/cloudflare-monitor](https://github.com/chanhanzhan/cloudflare-monitor)
-- 问题反馈: [GitHub Issues](https://github.com/chanhanzhan/cloudflare-monitor/issues)
-
-## 🗺️ 路线图
-
-- [ ] 添加更多 CDN 平台支持
-- [ ] 添加告警功能
-- [ ] 支持自定义仪表板
-- [ ] 添加数据导出功能
-- [ ] 移动端优化
+- 项目地址: [https://github.com/XxxXTeam/cloudflare-monitor](https://github.com/XxxXTeam/cloudflare-monitor)
+- 问题反馈: [GitHub Issues](https://github.com/XxxXTeam/cloudflare-monitor/issuesh
 
 ---
 
