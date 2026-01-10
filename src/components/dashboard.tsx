@@ -42,8 +42,13 @@ export function Dashboard() {
   const { theme, setTheme } = useTheme();
   const [selectedPeriod, setSelectedPeriod] = useState<TimePeriod>("1day");
   const [activeTab, setActiveTab] = useState<"all" | "CloudFLare" | "EdgeOne" | "ESA">("all");
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Independent loading states for each data source
+  const [cfLoading, setCfLoading] = useState(true);
+  const [workersLoading, setWorkersLoading] = useState(true);
+  const [eoLoading, setEoLoading] = useState(true);
+  const [esaLoading, setEsaLoading] = useState(true);
 
   // Cloudflare data
   const [cfData, setCfData] = useState<CFAnalyticsData | null>(null);
@@ -60,47 +65,64 @@ export function Dashboard() {
   // ESA data
   const [esaData, setEsaData] = useState<ESAData | null>(null);
 
+  // Combined loading state
+  const loading = cfLoading || workersLoading || eoLoading || esaLoading;
+
   const fetchData = async () => {
-    setLoading(true);
+    setCfLoading(true);
+    setWorkersLoading(true);
+    setEoLoading(true);
+    setEsaLoading(true);
     setError(null);
 
-    try {
-      // Fetch CF, EO, ESA and Workers data in parallel
-      const [cfRes, eoRes, workersRes, esaRes] = await Promise.all([
-        fetch("/api/cf/analytics").then((r) => r.json()).catch(() => ({ accounts: [] })),
-        fetch("/api/eo/zones").then((r) => r.json()).catch(() => ({ Zones: [] })),
-        fetch("/api/cf/workers").then((r) => r.json()).catch(() => ({ accounts: [], totalRequests: 0, totalErrors: 0 })),
-        fetch("/api/esa").then((r) => r.json()).catch(() => ({ accounts: [] })),
-      ]);
+    // Fetch each API independently - render as soon as each completes
+    fetch("/api/cf/analytics")
+      .then((r) => r.json())
+      .then((cfRes) => setCfData(cfRes))
+      .catch(() => setCfData({ accounts: [] }))
+      .finally(() => setCfLoading(false));
 
-      setCfData(cfRes);
-      setEoZones(eoRes.Zones || []);
-      setWorkersData(workersRes);
-      setEsaData(esaRes);
-      
-      // 设置 EdgeOne 概览数据
-      if (eoRes.overview) {
-        setEoOverview(eoRes.overview);
-      }
-      // 设置 EdgeOne Edge Functions 数据
-      if (eoRes.accounts) {
-        const totalEf = eoRes.accounts.reduce((acc: { totalRequests: number; totalCpuTime: number }, a: any) => {
-          if (a.edgeFunctions) {
-            acc.totalRequests += a.edgeFunctions.totalRequests || 0;
-            acc.totalCpuTime += a.edgeFunctions.totalCpuTime || 0;
+    fetch("/api/cf/workers")
+      .then((r) => r.json())
+      .then((workersRes) => setWorkersData(workersRes))
+      .catch(() => setWorkersData({ accounts: [], totalRequests: 0, totalErrors: 0 }))
+      .finally(() => setWorkersLoading(false));
+
+    fetch("/api/eo/zones")
+      .then((r) => r.json())
+      .then((eoRes) => {
+        setEoZones(eoRes.Zones || []);
+        if (eoRes.overview) setEoOverview(eoRes.overview);
+        if (eoRes.accounts) {
+          const totalEf = eoRes.accounts.reduce((acc: { totalRequests: number; totalCpuTime: number }, a: any) => {
+            if (a.edgeFunctions) {
+              acc.totalRequests += a.edgeFunctions.totalRequests || 0;
+              acc.totalCpuTime += a.edgeFunctions.totalCpuTime || 0;
+            }
+            return acc;
+          }, { totalRequests: 0, totalCpuTime: 0 });
+          if (totalEf.totalRequests > 0 || totalEf.totalCpuTime > 0) {
+            setEoEdgeFunctions(totalEf);
           }
-          return acc;
-        }, { totalRequests: 0, totalCpuTime: 0 });
-        if (totalEf.totalRequests > 0 || totalEf.totalCpuTime > 0) {
-          setEoEdgeFunctions(totalEf);
         }
-      }
-    } catch (err) {
-      console.error("Fetch error:", err);
-      setError(t("loadError"));
-    } finally {
-      setLoading(false);
-    }
+      })
+      .catch(() => setEoZones([]))
+      .finally(() => setEoLoading(false));
+
+    fetch("/api/esa?skipTimeSeries=true")
+      .then((r) => r.json())
+      .then((esaRes) => {
+        setEsaData(esaRes);
+        // Load full ESA data in background
+        fetch("/api/esa?details=true")
+          .then((r) => r.json())
+          .then((esaResFull) => {
+            if (esaResFull?.accounts) setEsaData(esaResFull);
+          })
+          .catch(() => {});
+      })
+      .catch(() => setEsaData({ accounts: [] }))
+      .finally(() => setEsaLoading(false));
   };
 
   useEffect(() => {
@@ -184,39 +206,14 @@ export function Dashboard() {
     return { totalRequests, totalBytes, quotas: Object.values(quotas) };
   }, [esaData]);
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-background">
-        <header className="sticky top-0 z-50 border-b bg-background/95 backdrop-blur">
-          <div className="container mx-auto flex h-14 sm:h-16 items-center justify-between px-3 sm:px-4 max-w-7xl">
-            <Skeleton className="h-6 w-32" />
-            <div className="flex items-center gap-2">
-              <Skeleton className="h-8 w-24 hidden sm:block" />
-              <Skeleton className="h-8 w-8 rounded" />
-            </div>
-          </div>
-        </header>
-        <main className="container mx-auto px-3 sm:px-4 py-4 sm:py-6 space-y-4 sm:space-y-6 max-w-7xl">
-          <div className="grid gap-3 sm:gap-4 grid-cols-2 lg:grid-cols-4">
-            {[...Array(4)].map((_, i) => (
-              <Card key={i}>
-                <CardContent className="p-4 sm:p-6">
-                  <Skeleton className="h-4 w-20 mb-2" />
-                  <Skeleton className="h-8 w-24" />
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-          <Skeleton className="h-10 w-full max-w-md" />
-          <Card>
-            <CardContent className="p-4 sm:p-6">
-              <Skeleton className="h-[250px] sm:h-[300px] w-full" />
-            </CardContent>
-          </Card>
-        </main>
-      </div>
-    );
-  }
+  // Loading skeleton component for individual sections
+  const SectionSkeleton = ({ height = "h-[200px]" }: { height?: string }) => (
+    <Card>
+      <CardContent className="p-4 sm:p-6">
+        <Skeleton className={`${height} w-full`} />
+      </CardContent>
+    </Card>
+  );
 
   return (
     <div className="min-h-screen bg-background">
@@ -314,15 +311,28 @@ export function Dashboard() {
           </Card>
         )}
 
-        {!hasCfData && !hasEoData && !hasEsaData ? (
-          <Card>
-            <CardContent className="flex flex-col items-center justify-center py-8 sm:py-12">
-              <Globe className="mb-4 h-10 w-10 sm:h-12 sm:w-12 text-muted-foreground" />
-              <h2 className="mb-2 text-lg sm:text-xl font-semibold">{t("noData")}</h2>
-              <p className="text-center text-sm sm:text-base text-muted-foreground">{t("configureToken")}</p>
-            </CardContent>
-          </Card>
-        ) : (
+        {/* Loading state - show skeleton while any data is loading */}
+        {loading && !hasCfData && !hasEoData && !hasEsaData && (
+          <div className="flex items-center justify-center min-h-[60vh]">
+            <div className="text-center space-y-4">
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
+              <p className="text-muted-foreground">加载中...</p>
+            </div>
+          </div>
+        )}
+
+        {/* Show "no data" only after all loading is complete */}
+        {!loading && !hasCfData && !hasEoData && !hasEsaData ? (
+          <div className="flex items-center justify-center min-h-[60vh]">
+            <Card className="w-full max-w-md mx-auto">
+              <CardContent className="flex flex-col items-center justify-center py-12 sm:py-16">
+                <Globe className="mb-4 h-12 w-12 sm:h-16 sm:w-16 text-muted-foreground" />
+                <h2 className="mb-2 text-lg sm:text-xl font-semibold">{t("noData")}</h2>
+                <p className="text-center text-sm sm:text-base text-muted-foreground">{t("configureToken")}</p>
+              </CardContent>
+            </Card>
+          </div>
+        ) : (hasCfData || hasEoData || hasEsaData) && (
           <>
             {/* Provider Tabs */}
             <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as typeof activeTab)} className="mb-4 sm:mb-6">
@@ -368,7 +378,20 @@ export function Dashboard() {
                 </div>
 
                 {/* Cloudflare Zones */}
-                {hasCfData && (
+                {cfLoading && (
+                  <section className="animate-pulse">
+                    <div className="mb-4 flex items-center gap-2">
+                      <Cloud className="h-5 w-5 text-cloudflare-orange" />
+                      <h2 className="text-lg font-semibold text-muted-foreground">Cloudflare 加载中...</h2>
+                    </div>
+                    <div className="grid gap-4 md:grid-cols-2">
+                      {[1, 2].map((i) => (
+                        <Card key={i}><CardContent className="p-6"><Skeleton className="h-[200px] w-full" /></CardContent></Card>
+                      ))}
+                    </div>
+                  </section>
+                )}
+                {!cfLoading && hasCfData && (
                   <section>
                     <div className="mb-4 flex items-center gap-2">
                       <Cloud className="h-5 w-5 text-cloudflare-orange" />
@@ -407,7 +430,20 @@ export function Dashboard() {
                 )}
 
                 {/* Cloudflare Workers */}
-                {workersData && workersData.totalRequests > 0 && (
+                {workersLoading && (
+                  <section className="animate-pulse">
+                    <div className="mb-4 flex items-center gap-2">
+                      <Code className="h-5 w-5 text-cloudflare-orange" />
+                      <h2 className="text-lg font-semibold text-muted-foreground">Cloudflare Workers 加载中...</h2>
+                    </div>
+                    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+                      {[1, 2, 3, 4].map((i) => (
+                        <Card key={i}><CardContent className="p-6"><Skeleton className="h-[80px] w-full" /></CardContent></Card>
+                      ))}
+                    </div>
+                  </section>
+                )}
+                {!workersLoading && workersData && workersData.totalRequests > 0 && (
                   <section>
                     <div className="mb-4 flex items-center gap-2">
                       <Code className="h-5 w-5 text-cloudflare-orange" />
@@ -513,13 +549,26 @@ export function Dashboard() {
                 )}
 
                 {/* EdgeOne Overview */}
-                {hasEoData && eoOverview && (
+                {eoLoading && (
+                  <section className="animate-pulse">
+                    <div className="mb-4 flex items-center gap-2">
+                      <Zap className="h-5 w-5 text-edgeone-blue" />
+                      <h2 className="text-lg font-semibold text-muted-foreground">EdgeOne 加载中...</h2>
+                    </div>
+                    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4 mb-6">
+                      {[1, 2, 3, 4].map((i) => (
+                        <Card key={i}><CardContent className="p-6"><Skeleton className="h-[80px] w-full" /></CardContent></Card>
+                      ))}
+                    </div>
+                  </section>
+                )}
+                {!eoLoading && hasEoData && eoOverview && (
                   <section>
                     <div className="mb-4 flex items-center gap-2">
                       <Zap className="h-5 w-5 text-edgeone-blue" />
                       <h2 className="text-lg font-semibold">EdgeOne 概览 (24h)</h2>
                     </div>
-                    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4 mb-6">
+                    <div className="grid gap-4 grid-cols-2 lg:grid-cols-4 mb-6">
                       <Card>
                         <CardContent className="flex items-center gap-4 p-6">
                           <div className="rounded-full p-3 bg-blue-500/10">
@@ -542,38 +591,47 @@ export function Dashboard() {
                           </div>
                         </CardContent>
                       </Card>
-                      {eoEdgeFunctions && eoEdgeFunctions.totalRequests > 0 && (
-                        <>
-                          <Card>
-                            <CardContent className="flex items-center gap-4 p-6">
-                              <div className="rounded-full p-3 bg-purple-500/10">
-                                <Code className="h-6 w-6 text-purple-500" />
-                              </div>
-                              <div>
-                                <p className="text-sm text-muted-foreground">边缘函数请求</p>
-                                <p className="text-2xl font-bold">{formatNumber(eoEdgeFunctions.totalRequests)}</p>
-                              </div>
-                            </CardContent>
-                          </Card>
-                          <Card>
-                            <CardContent className="flex items-center gap-4 p-6">
-                              <div className="rounded-full p-3 bg-orange-500/10">
-                                <Activity className="h-6 w-6 text-orange-500" />
-                              </div>
-                              <div>
-                                <p className="text-sm text-muted-foreground">边缘函数 CPU</p>
-                                <p className="text-2xl font-bold">{formatNumber(eoEdgeFunctions.totalCpuTime)} ms</p>
-                              </div>
-                            </CardContent>
-                          </Card>
-                        </>
-                      )}
+                      <Card>
+                        <CardContent className="flex items-center gap-4 p-6">
+                          <div className="rounded-full p-3 bg-purple-500/10">
+                            <Code className="h-6 w-6 text-purple-500" />
+                          </div>
+                          <div>
+                            <p className="text-sm text-muted-foreground">边缘函数请求</p>
+                            <p className="text-2xl font-bold">{formatNumber(eoEdgeFunctions?.totalRequests || 0)}</p>
+                          </div>
+                        </CardContent>
+                      </Card>
+                      <Card>
+                        <CardContent className="flex items-center gap-4 p-6">
+                          <div className="rounded-full p-3 bg-orange-500/10">
+                            <Activity className="h-6 w-6 text-orange-500" />
+                          </div>
+                          <div>
+                            <p className="text-sm text-muted-foreground">边缘函数 CPU</p>
+                            <p className="text-2xl font-bold">{formatNumber(eoEdgeFunctions?.totalCpuTime || 0)} ms</p>
+                          </div>
+                        </CardContent>
+                      </Card>
                     </div>
                   </section>
                 )}
 
                 {/* EdgeOne Zones */}
-                {hasEoData && (
+                {eoLoading && (
+                  <section className="animate-pulse">
+                    <div className="mb-4 flex items-center gap-2">
+                      <Zap className="h-5 w-5 text-edgeone-blue" />
+                      <h2 className="text-lg font-semibold text-muted-foreground">EdgeOne 站点加载中...</h2>
+                    </div>
+                    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                      {[1, 2, 3].map((i) => (
+                        <Card key={i}><CardContent className="p-6"><Skeleton className="h-[150px] w-full" /></CardContent></Card>
+                      ))}
+                    </div>
+                  </section>
+                )}
+                {!eoLoading && hasEoData && (
                   <section>
                     <div className="mb-4 flex items-center gap-2">
                       <Zap className="h-5 w-5 text-edgeone-blue" />
@@ -634,6 +692,123 @@ export function Dashboard() {
                 {/* Geography Stats */}
                 {selectedPeriod === "1day" && hasCfData && (
                   <GeographyStats data={cfData} formatNumber={formatNumber} formatBytes={formatBytes} />
+                )}
+
+                {/* ESA Overview in All Tab */}
+                {esaLoading && (
+                  <section className="animate-pulse">
+                    <div className="mb-4 flex items-center gap-2">
+                      <Shield className="h-5 w-5 text-emerald-500" />
+                      <h2 className="text-lg font-semibold text-muted-foreground">ESA 加载中...</h2>
+                    </div>
+                    <div className="grid gap-4 grid-cols-2 lg:grid-cols-4 mb-6">
+                      {[1, 2, 3, 4].map((i) => (
+                        <Card key={i}><CardContent className="p-6"><Skeleton className="h-[80px] w-full" /></CardContent></Card>
+                      ))}
+                    </div>
+                    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                      {[1, 2, 3].map((i) => (
+                        <Card key={i}><CardContent className="p-6"><Skeleton className="h-[150px] w-full" /></CardContent></Card>
+                      ))}
+                    </div>
+                  </section>
+                )}
+                {!esaLoading && hasEsaData && (
+                  <>
+                  {/* ESA Stats Cards */}
+                  <section>
+                    <div className="mb-4 flex items-center gap-2">
+                      <Shield className="h-5 w-5 text-emerald-500" />
+                      <h2 className="text-lg font-semibold">ESA 概览 (24h)</h2>
+                    </div>
+                    <div className="grid gap-4 grid-cols-2 lg:grid-cols-4 mb-6">
+                      <Card>
+                        <CardContent className="flex items-center gap-4 p-6">
+                          <div className="rounded-full p-3 bg-emerald-500/10">
+                            <Shield className="h-6 w-6 text-emerald-500" />
+                          </div>
+                          <div>
+                            <p className="text-sm text-muted-foreground">站点数</p>
+                            <p className="text-2xl font-bold">{esaData?.accounts.reduce((sum, a) => sum + (a.sites?.length || 0), 0) || 0}</p>
+                          </div>
+                        </CardContent>
+                      </Card>
+                      <Card>
+                        <CardContent className="flex items-center gap-4 p-6">
+                          <div className="rounded-full p-3 bg-blue-500/10">
+                            <Activity className="h-6 w-6 text-blue-500" />
+                          </div>
+                          <div>
+                            <p className="text-sm text-muted-foreground">总请求</p>
+                            <p className="text-2xl font-bold">{formatNumber(esaSummary.totalRequests)}</p>
+                          </div>
+                        </CardContent>
+                      </Card>
+                      <Card>
+                        <CardContent className="flex items-center gap-4 p-6">
+                          <div className="rounded-full p-3 bg-cyan-500/10">
+                            <Database className="h-6 w-6 text-cyan-500" />
+                          </div>
+                          <div>
+                            <p className="text-sm text-muted-foreground">总流量</p>
+                            <p className="text-2xl font-bold">{formatBytes(esaSummary.totalBytes)}</p>
+                          </div>
+                        </CardContent>
+                      </Card>
+                      <Card>
+                        <CardContent className="flex items-center gap-4 p-6">
+                          <div className="rounded-full p-3 bg-purple-500/10">
+                            <Code className="h-6 w-6 text-purple-500" />
+                          </div>
+                          <div>
+                            <p className="text-sm text-muted-foreground">边缘函数</p>
+                            <p className="text-2xl font-bold">{esaData?.accounts.reduce((sum, a) => sum + (a.routineCount || 0), 0) || 0}</p>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    </div>
+                  </section>
+                  {/* ESA Sites */}
+                  <section>
+                    <div className="mb-4 flex items-center gap-2">
+                      <Shield className="h-5 w-5 text-emerald-500" />
+                      <h2 className="text-lg font-semibold">ESA 站点</h2>
+                    </div>
+                    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                      {esaData?.accounts.flatMap((acc) =>
+                        (acc.sites || []).map((s) => (
+                          <Card 
+                            key={`all-${acc.name}-${s.SiteId}`}
+                            className="cursor-pointer transition-all hover:shadow-lg hover:border-emerald-500/50"
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => router.push(`/zone/esa/${encodeURIComponent(s.SiteId || s.SiteName)}`)}
+                          >
+                            <CardHeader className="pb-2">
+                              <CardTitle className="flex items-center gap-2 text-base">
+                                <Shield className="h-4 w-4 text-emerald-500" />
+                                {s.SiteName}
+                                <span className="ml-auto text-xs text-muted-foreground">详情 →</span>
+                              </CardTitle>
+                            </CardHeader>
+                            <CardContent>
+                              <div className="space-y-2 text-sm">
+                                <div className="flex justify-between">
+                                  <span className="text-muted-foreground">请求数</span>
+                                  <span className="font-medium">{formatNumber(s.requests || 0)}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                  <span className="text-muted-foreground">流量</span>
+                                  <span className="font-medium">{formatBytes(s.bytes || 0)}</span>
+                                </div>
+                              </div>
+                            </CardContent>
+                          </Card>
+                        ))
+                      )}
+                    </div>
+                  </section>
+                  </>
                 )}
               </TabsContent>
 
@@ -747,12 +922,23 @@ export function Dashboard() {
                     <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
                       {workersData.accounts.flatMap((account) =>
                         account.workers.map((worker) => (
-                          <Card key={`cf-tab-${account.account}-${worker.scriptName}`}>
+                          <Card 
+                            key={`cf-tab-${account.account}-${worker.scriptName}`}
+                            className="cursor-pointer transition-all hover:shadow-lg hover:border-cloudflare-orange/50"
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => router.push(`/zone/cf/workers/${encodeURIComponent(worker.scriptName)}`)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                router.push(`/zone/cf/workers/${encodeURIComponent(worker.scriptName)}`);
+                              }
+                            }}
+                          >
                             <CardHeader className="pb-2">
                               <CardTitle className="flex items-center gap-2 text-base">
                                 <Code className="h-4 w-4 text-cloudflare-orange" />
-                                {worker.scriptName}
-                                <span className="ml-auto text-xs text-muted-foreground">{account.account}</span>
+                                <span className="truncate">{worker.scriptName}</span>
+                                <span className="ml-auto text-xs text-muted-foreground flex-shrink-0">详情 →</span>
                               </CardTitle>
                             </CardHeader>
                             <CardContent>
@@ -886,7 +1072,21 @@ export function Dashboard() {
 
               {/* ESA Tab */}
               <TabsContent value="esa" className="space-y-6">
-                {hasEsaData && (
+                {esaLoading && (
+                  <div className="space-y-6 animate-pulse">
+                    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+                      {[1, 2, 3, 4].map((i) => (
+                        <Card key={i}><CardContent className="p-6"><Skeleton className="h-[80px] w-full" /></CardContent></Card>
+                      ))}
+                    </div>
+                    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                      {[1, 2, 3].map((i) => (
+                        <Card key={i}><CardContent className="p-6"><Skeleton className="h-[150px] w-full" /></CardContent></Card>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {!esaLoading && hasEsaData && (
                   <>
                     <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
                       <Card>
@@ -1006,8 +1206,8 @@ export function Dashboard() {
                                   <CardTitle className="flex items-center gap-2 text-base">
                                     <Code className="h-4 w-4 text-purple-500" />
                                     {routine.name}
-                                    <Badge variant={routine.status === "active" || routine.status === "online" ? "success" : "secondary"} className="ml-auto text-xs">
-                                      {routine.status || "未知"}
+                                    <Badge variant={routine.status === "Running" || routine.status === "deployed" || routine.status === "active" ? "success" : routine.status === "Creating" ? "info" : "secondary"} className="ml-auto text-xs">
+                                      {routine.status === "Running" || routine.status === "deployed" ? "运行中" : routine.status === "Creating" ? "创建中" : routine.status === "NotOpened" ? "未开通" : routine.status || "未知"}
                                     </Badge>
                                   </CardTitle>
                                 </CardHeader>
@@ -1035,53 +1235,6 @@ export function Dashboard() {
                       </section>
                     )}
 
-                    {/* ESA Quotas */}
-                    <section>
-                      <div className="mb-4 flex items-center gap-2">
-                        <Database className="h-5 w-5 text-cyan-500" />
-                        <h2 className="text-lg font-semibold">配额使用</h2>
-                      </div>
-                      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-                        {esaData?.accounts.map((acc) => (
-                          <Card key={acc.name}>
-                            <CardHeader className="pb-2">
-                              <CardTitle className="flex items-center gap-2 text-base">
-                                <Shield className="h-4 w-4" />
-                                {acc.name}
-                                <Badge variant="outline" className="ml-auto">
-                                  {acc.quotas?.length || 0} 项配额
-                                </Badge>
-                              </CardTitle>
-                            </CardHeader>
-                            <CardContent className="space-y-3 text-sm">
-                              <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
-                                {(acc.quotas || []).slice(0, 6).map((q) => {
-                                  const remaining = Number(q.total || 0) - Number(q.used || 0);
-                                  const percent = q.total ? Math.min(100, Math.max(0, (Number(q.used || 0) / Number(q.total || 1)) * 100)) : 0;
-                                  return (
-                                    <div key={q.quotaName} className="space-y-1">
-                                      <div className="flex justify-between text-xs">
-                                        <span className="font-medium truncate max-w-[120px]">{q.quotaName.split("|")[0]}</span>
-                                        <span className="text-muted-foreground">
-                                          {q.used ?? 0} / {q.total ?? 0}
-                                        </span>
-                                      </div>
-                                      <div className="h-2 rounded bg-muted">
-                                        <div
-                                          className={`h-2 rounded ${percent > 90 ? "bg-red-500" : percent > 70 ? "bg-yellow-500" : "bg-emerald-500"}`}
-                                          style={{ width: `${percent}%` }}
-                                        />
-                                      </div>
-                                    </div>
-                                  );
-                                })}
-                                {acc.quotas?.length === 0 && <span className="text-muted-foreground">无配额数据</span>}
-                              </div>
-                            </CardContent>
-                          </Card>
-                        ))}
-                      </div>
-                    </section>
                   </>
                 )}
               </TabsContent>

@@ -215,6 +215,14 @@ function normalizeSites(raw: any[]): any[] {
     CnameStatus: s.CnameStatus || s.cnameStatus,
     Area: s.Area || s.area,
     AccessType: s.AccessType || s.accessType,
+    PlanType: s.PlanType || s.planType || s.RatePlanType || s.ratePlanType,
+    InstanceId: s.InstanceId || s.instanceId,
+    CreateTime: s.CreateTime || s.createTime || s.GmtCreate || s.gmtCreate,
+    UpdateTime: s.UpdateTime || s.updateTime || s.GmtModified || s.gmtModified,
+    VerifyStatus: s.VerifyStatus || s.verifyStatus,
+    NameServerList: s.NameServerList || s.nameServerList || s.NameServers || s.nameServers,
+    ResourceGroupId: s.ResourceGroupId || s.resourceGroupId,
+    Description: s.Description || s.description,
   }));
 }
 
@@ -234,6 +242,8 @@ interface ESARoutine {
   status?: string;
   createTime?: string;
   updateTime?: string;
+  env?: string;
+  relatedRecord?: string;
 }
 
 function normalizeRoutines(raw: any[]): ESARoutine[] {
@@ -245,12 +255,34 @@ function normalizeRoutines(raw: any[]): ESARoutine[] {
     status: r.Status || r.status || "",
     createTime: r.CreateTime || r.createTime || "",
     updateTime: r.UpdateTime || r.updateTime || "",
+    env: r.Env || r.env || "",
+    relatedRecord: r.DefaultRelatedRecord || r.relatedRecord || "",
   }));
+}
+
+async function fetchRoutineDetail(
+  routineName: string,
+  accessKeyId: string,
+  accessKeySecret: string
+): Promise<any> {
+  try {
+    const resp = await callEsaApi(
+      "GetRoutine",
+      { Name: routineName },
+      accessKeyId,
+      accessKeySecret
+    );
+    return resp || {};
+  } catch (err) {
+    console.error(`ESA GetRoutine error for ${routineName}:`, err);
+    return {};
+  }
 }
 
 async function fetchRoutines(
   accessKeyId: string,
-  accessKeySecret: string
+  accessKeySecret: string,
+  fetchDetails: boolean = false
 ): Promise<{ routines: ESARoutine[]; totalCount: number }> {
   try {
     const resp = await callEsaApi(
@@ -266,7 +298,40 @@ async function fetchRoutines(
       resp?.Routines?.Routine ||
       [];
     const totalCount = resp?.TotalCount || resp?.Result?.TotalCount || routinesRaw.length || 0;
-    return { routines: normalizeRoutines(routinesRaw), totalCount };
+    const basicRoutines = normalizeRoutines(routinesRaw);
+    
+    // Skip detailed fetching for faster initial load
+    if (!fetchDetails) {
+      return { 
+        routines: basicRoutines.map(r => ({ ...r, status: "deployed" })), 
+        totalCount 
+      };
+    }
+    
+    // Fetch detailed info only when requested (limit to 5 for performance)
+    const detailedRoutines = await Promise.all(
+      basicRoutines.slice(0, 5).map(async (routine) => {
+        const detail = await fetchRoutineDetail(routine.name, accessKeyId, accessKeySecret);
+        const envs = detail?.Envs || [];
+        const productionEnv = envs.find((e: any) => e.Env === "production") || envs[0];
+        const codeVersions = productionEnv?.CodeDeploy?.CodeVersions || [];
+        const latestVersion = codeVersions[0];
+        
+        return {
+          ...routine,
+          description: detail?.Description ? Buffer.from(detail.Description, 'base64').toString('utf-8') : routine.description,
+          createTime: detail?.CreateTime || routine.createTime,
+          relatedRecord: detail?.DefaultRelatedRecord || routine.relatedRecord,
+          env: productionEnv?.Env || "",
+          codeVersion: latestVersion?.CodeVersion?.toString() || routine.codeVersion,
+          status: envs.length > 0 && productionEnv?.CodeDeploy ? "deployed" : routine.status,
+        };
+      })
+    );
+    
+    // Append remaining routines without details
+    const remaining = basicRoutines.slice(5).map(r => ({ ...r, status: "deployed" }));
+    return { routines: [...detailedRoutines, ...remaining], totalCount };
   } catch (err) {
     console.error("ESA ListUserRoutines error:", err);
     return { routines: [], totalCount: 0 };
@@ -311,6 +376,10 @@ async function fetchErService(
 
 export async function GET(request: NextRequest) {
   try {
+    const { searchParams } = new URL(request.url);
+    const fetchDetails = searchParams.get("details") === "true";
+    const skipTimeSeries = searchParams.get("skipTimeSeries") === "true";
+    
     const accounts = parseESAAccounts();
     if (accounts.length === 0) {
       return NextResponse.json({ error: "请配置 ESA_ACCESS_KEY_ID 与 ESA_ACCESS_KEY_SECRET", accounts: [] });
@@ -382,43 +451,54 @@ export async function GET(request: NextRequest) {
         });
         const client = new ESA20240910(config);
         
-        for (const site of sites) {
-          if (site.SiteId) {
-            try {
-              // Fields must be array of objects with fieldName property
-              const request = new $ESA20240910.DescribeSiteTimeSeriesDataRequest({
-                siteId: Number(site.SiteId),
-                startTime: startTime,
-                endTime: endTime,
-                fields: [
-                  new $ESA20240910.DescribeSiteTimeSeriesDataRequestFields({ fieldName: "Traffic" }),
-                  new $ESA20240910.DescribeSiteTimeSeriesDataRequestFields({ fieldName: "Requests" }),
-                ],
-              });
-              
-              console.log("ESA SDK Request:", JSON.stringify(request, null, 2));
-              const response = await client.describeSiteTimeSeriesData(request);
-              console.log("ESA SDK Response:", JSON.stringify(response.body, null, 2));
-              
-              let totalRequests = 0;
-              let totalBytes = 0;
-              
-              // Parse SummarizedData
-              const summaryData = response.body?.summarizedData || [];
-              for (const item of summaryData) {
-                const fieldName = item.fieldName || "";
-                if (fieldName === "Requests") {
-                  totalRequests += Number(item.value || 0);
+        // Skip time series for faster initial load
+        if (!skipTimeSeries) {
+          for (const site of sites) {
+            if (site.SiteId) {
+              try {
+                const request = new $ESA20240910.DescribeSiteTimeSeriesDataRequest({
+                  siteId: Number(site.SiteId),
+                  startTime: startTime,
+                  endTime: endTime,
+                  fields: [
+                    new $ESA20240910.DescribeSiteTimeSeriesDataRequestFields({ fieldName: "Traffic", dimension: ["ALL"] }),
+                    new $ESA20240910.DescribeSiteTimeSeriesDataRequestFields({ fieldName: "Requests", dimension: ["ALL"] }),
+                  ],
+                });
+                
+                const response = await client.describeSiteTimeSeriesData(request);
+                
+                let totalRequests = 0;
+                let totalBytes = 0;
+                const timeSeriesRequests: { time: string; value: number }[] = [];
+                const timeSeriesTraffic: { time: string; value: number }[] = [];
+                
+                const summaryData = response.body?.summarizedData || [];
+                for (const item of summaryData) {
+                  const fieldName = item.fieldName || "";
+                  if (fieldName === "Requests") totalRequests += Number(item.value || 0);
+                  if (fieldName === "Traffic") totalBytes += Number(item.value || 0);
                 }
-                if (fieldName === "Traffic") {
-                  totalBytes += Number(item.value || 0);
+                
+                const dataItems = response.body?.data || [];
+                for (const item of dataItems) {
+                  const fieldName = item.fieldName || "";
+                  const detailData = item.detailData || [];
+                  for (const point of detailData) {
+                    const timeStr = point.timeStamp || "";
+                    const value = Number(point.value || 0);
+                    if (fieldName === "Requests") timeSeriesRequests.push({ time: timeStr, value });
+                    if (fieldName === "Traffic") timeSeriesTraffic.push({ time: timeStr, value });
+                  }
                 }
+                
+                site.requests = totalRequests;
+                site.bytes = totalBytes;
+                site.timeSeriesRequests = timeSeriesRequests;
+                site.timeSeriesTraffic = timeSeriesTraffic;
+              } catch (err: any) {
+                console.error(`ESA SDK error for ${site.SiteId}:`, err?.message || err);
               }
-              
-              site.requests = totalRequests;
-              site.bytes = totalBytes;
-            } catch (err: any) {
-              console.error(`ESA SDK error for ${site.SiteId}:`, err?.message || err);
             }
           }
         }
@@ -437,77 +517,37 @@ export async function GET(request: NextRequest) {
       let quotaResSiteOnly: any = undefined;
       let quotaResFallback: any = undefined;
 
-      if (instanceId) {
-        // Prefer instance + site binding; fallback to instance only
+      if (firstSiteId) {
+        // QuotaNames is mandatory - use common quota names
+        const quotaNamesStr = "customHttpCert,transition_rule,cache_rules|rule_quota,redirect_rules|rule_quota,origin_rules|rule_quota";
         quotaRes = await callEsaApi(
           "ListInstanceQuotasWithUsage",
-          {
-            ...(firstSiteId ? { InstanceId: instanceId, SiteId: String(firstSiteId) } : { InstanceId: instanceId }),
-            ...(quotaNames && quotaNames.length > 0 ? { QuotaNames: quotaNames.join(",") } : {}),
+          { 
+            SiteId: String(firstSiteId),
+            QuotaNames: quotaNamesStr,
           },
           acc.accessKeyId,
           acc.accessKeySecret
         );
-        const quotasRaw =
-          quotaRes?.InstanceQuotas ||
-          quotaRes?.Quotas ||
-          quotaRes?.QuotaUsages ||
-          quotaRes?.Data?.InstanceQuotas ||
-          quotaRes?.Quotas?.Quotas ||
-          quotaRes?.Quotas?.Quota ||
-          quotaRes?.Data?.Quotas ||
-          [];
+        // API returns: { Quotas: [{ QuotaName, QuotaValue, Usage, SiteUsage }] }
+        const quotasRaw = quotaRes?.Quotas || [];
         quotas = normalizeQuotas(quotasRaw);
-        if (quotas.length === 0 && firstSiteId) {
-          quotaResSiteOnly = await callEsaApi(
-            "ListInstanceQuotasWithUsage",
-            {
-              SiteId: String(firstSiteId),
-              ...(quotaNames && quotaNames.length > 0 ? { QuotaNames: quotaNames.join(",") } : {}),
-            },
-            acc.accessKeyId,
-            acc.accessKeySecret
-          );
-          const quotasRaw2 =
-            quotaResSiteOnly?.InstanceQuotas ||
-            quotaResSiteOnly?.Quotas ||
-            quotaResSiteOnly?.QuotaUsages ||
-            quotaResSiteOnly?.Data?.InstanceQuotas ||
-            quotaResSiteOnly?.Quotas?.Quotas ||
-            quotaResSiteOnly?.Quotas?.Quota ||
-            quotaResSiteOnly?.Data?.Quotas ||
-            [];
-          quotas = normalizeQuotas(quotasRaw2);
-        }
-        if (quotas.length === 0) {
-          const fallbackInstanceId = await fetchDefaultInstanceId(acc.accessKeyId, acc.accessKeySecret);
-          if (fallbackInstanceId && fallbackInstanceId !== instanceId) {
-            instanceId = fallbackInstanceId;
-            quotaResFallback = await callEsaApi(
-              "ListInstanceQuotasWithUsage",
-              {
-                InstanceId: fallbackInstanceId,
-                ...(quotaNames && quotaNames.length > 0 ? { QuotaNames: quotaNames.join(",") } : {}),
-              },
-              acc.accessKeyId,
-              acc.accessKeySecret
-            );
-            const quotasRaw3 =
-              quotaResFallback?.InstanceQuotas ||
-              quotaResFallback?.Quotas ||
-              quotaResFallback?.QuotaUsages ||
-              quotaResFallback?.Data?.InstanceQuotas ||
-              quotaResFallback?.Quotas?.Quotas ||
-              quotaResFallback?.Quotas?.Quota ||
-              quotaResFallback?.Data?.Quotas ||
-              [];
-            quotas = normalizeQuotas(quotasRaw3);
-          }
-        }
       }
-      const { routines, totalCount: routineCount } = await fetchRoutines(acc.accessKeyId, acc.accessKeySecret);
-      const edgeRoutinePlans = await fetchEdgeRoutinePlans(acc.accessKeyId, acc.accessKeySecret);
-      const erService = await fetchErService(acc.accessKeyId, acc.accessKeySecret);
+      // Fetch routines, plans, and erService in parallel for better performance
+      const [routinesResult, edgeRoutinePlans, erService] = await Promise.all([
+        fetchRoutines(acc.accessKeyId, acc.accessKeySecret, fetchDetails),
+        fetchEdgeRoutinePlans(acc.accessKeyId, acc.accessKeySecret),
+        fetchErService(acc.accessKeyId, acc.accessKeySecret),
+      ]);
+      const { routines, totalCount: routineCount } = routinesResult;
+      
+      // Set routine status based on erService status (Running/Creating/NotOpened)
+      const erStatus = erService?.Status || "";
+      const routinesWithStatus = routines.map(r => ({
+        ...r,
+        status: r.status || erStatus || "",
+      }));
+      
       const totalRequests = sites.reduce((sum, s) => sum + (s.requests || 0), 0);
       const totalBytes = sites.reduce((sum, s) => sum + (s.bytes || 0), 0);
 
@@ -519,7 +559,7 @@ export async function GET(request: NextRequest) {
         totalBytes,
         instanceId,
         quotaSource: instanceId ? "instance" : "fallback",
-        routines: routines.slice(0, 20),
+        routines: routinesWithStatus.slice(0, 20),
         routineCount,
         edgeRoutinePlans,
         erService,

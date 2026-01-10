@@ -5,17 +5,15 @@ import { useParams, useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ArrowLeft, Shield, Globe, Activity, Database, TrendingUp, Code, Server, Clock, Zap, Settings, FileCode, Cpu } from "lucide-react";
+import { ArrowLeft, Shield, Globe, Activity, Database, TrendingUp, Code, Server, Clock, Zap, FileCode, Cpu } from "lucide-react";
 import { formatBytes, formatNumber } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, PieChart, Pie, Cell
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
 } from "recharts";
-import type { ESAData, ESASite, ESAAccount, ESAQuota, ESARoutine } from "@/types";
-
-const COLORS = ["#10B981", "#3B82F6", "#F59E0B", "#EF4444", "#8B5CF6", "#EC4899", "#06B6D4", "#84CC16"];
+import type { ESAData, ESASite, ESAAccount, ESARoutine } from "@/types";
 
 interface TrafficData {
   time: string;
@@ -31,7 +29,6 @@ export default function ESASiteDetailPage() {
   const [site, setSite] = useState<ESASite | null>(null);
   const [account, setAccount] = useState<ESAAccount | null>(null);
   const [loading, setLoading] = useState(true);
-  const [trafficData, setTrafficData] = useState<TrafficData[]>([]);
 
   useEffect(() => {
     fetchSiteData();
@@ -40,7 +37,8 @@ export default function ESASiteDetailPage() {
   const fetchSiteData = async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/esa");
+      // Fast initial load, then fetch full details
+      const res = await fetch("/api/esa?skipTimeSeries=true");
       const data: ESAData = await res.json();
       
       // Find the site by siteId (compare as strings since SiteId can be number or string)
@@ -53,22 +51,22 @@ export default function ESASiteDetailPage() {
         if (found) {
           setSite(found);
           setAccount(acc);
+          
+          // Fetch full data with time series in background
+          fetch("/api/esa?details=true").then(r => r.json()).then((fullData: ESAData) => {
+            for (const fullAcc of fullData.accounts || []) {
+              const fullSite = fullAcc.sites?.find((s) => String(s.SiteId) === String(found.SiteId));
+              if (fullSite) {
+                setSite(fullSite);
+                setAccount(fullAcc);
+                break;
+              }
+            }
+          }).catch(() => {});
           break;
         }
       }
 
-      // Generate mock traffic data for visualization (in real implementation, fetch from API)
-      const now = new Date();
-      const mockData: TrafficData[] = [];
-      for (let i = 23; i >= 0; i--) {
-        const time = new Date(now.getTime() - i * 60 * 60 * 1000);
-        mockData.push({
-          time: time.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }),
-          requests: Math.floor(Math.random() * 1000),
-          bytes: Math.floor(Math.random() * 10000000),
-        });
-      }
-      setTrafficData(mockData);
     } catch (err) {
       console.error("Fetch error:", err);
     } finally {
@@ -76,16 +74,32 @@ export default function ESASiteDetailPage() {
     }
   };
 
-  const quotaChartData = useMemo(() => {
-    if (!account?.quotas) return [];
-    return account.quotas.slice(0, 8).map((q) => ({
-      name: q.quotaName.split("|")[0],
-      used: q.used,
-      remaining: Math.max(0, q.total - q.used),
-      total: q.total,
-      percent: q.total > 0 ? ((q.used / q.total) * 100).toFixed(1) : "0",
+  // Transform time series data for charts
+  const trafficData = useMemo(() => {
+    if (!site?.timeSeriesRequests?.length && !site?.timeSeriesTraffic?.length) {
+      return [];
+    }
+    const requestsMap = new Map<string, number>();
+    const trafficMap = new Map<string, number>();
+    
+    site.timeSeriesRequests?.forEach((p) => {
+      requestsMap.set(p.time, p.value);
+    });
+    site.timeSeriesTraffic?.forEach((p) => {
+      trafficMap.set(p.time, p.value);
+    });
+    
+    const allTimes = [...new Set([
+      ...(site.timeSeriesRequests?.map(p => p.time) || []),
+      ...(site.timeSeriesTraffic?.map(p => p.time) || [])
+    ])].sort();
+    
+    return allTimes.map((time) => ({
+      time: new Date(time).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }),
+      requests: requestsMap.get(time) || 0,
+      bytes: trafficMap.get(time) || 0,
     }));
-  }, [account]);
+  }, [site]);
 
   if (loading) {
     return (
@@ -183,11 +197,11 @@ export default function ESASiteDetailPage() {
           <Card className="bg-gradient-to-br from-orange-500/10 to-orange-600/5 border-orange-500/20">
             <CardContent className="flex items-center gap-3 sm:gap-4 p-4 sm:p-6">
               <div className="rounded-full p-2 sm:p-3 bg-orange-500/20">
-                <Settings className="h-5 w-5 sm:h-6 sm:w-6 text-orange-500" />
+                <Clock className="h-5 w-5 sm:h-6 sm:w-6 text-orange-500" />
               </div>
               <div>
-                <p className="text-xs text-muted-foreground uppercase tracking-wide">配额项</p>
-                <p className="text-lg sm:text-2xl font-bold text-orange-600 dark:text-orange-400">{account?.quotas?.length || 0}</p>
+                <p className="text-xs text-muted-foreground uppercase tracking-wide">ER服务状态</p>
+                <p className="text-base sm:text-lg font-bold text-orange-600 dark:text-orange-400">{account?.erService?.Status || "未启用"}</p>
               </div>
             </CardContent>
           </Card>
@@ -202,7 +216,9 @@ export default function ESASiteDetailPage() {
               </div>
               <div>
                 <p className="text-xs text-muted-foreground uppercase tracking-wide">加速区域</p>
-                <p className="text-base sm:text-lg font-bold text-cyan-600 dark:text-cyan-400">{site.Coverage || site.Area || "全球"}</p>
+                <p className="text-base sm:text-lg font-bold text-cyan-600 dark:text-cyan-400">
+                  {site.Coverage === "global" ? "全球加速" : site.Coverage === "domestic" ? "中国大陆" : site.Coverage === "overseas" ? "海外加速" : site.Coverage || site.Area || "全球"}
+                </p>
               </div>
             </CardContent>
           </Card>
@@ -246,7 +262,6 @@ export default function ESASiteDetailPage() {
             <TabsList className="inline-flex h-auto gap-1 bg-muted/50 p-1 w-max min-w-full">
               <TabsTrigger value="overview" className="text-xs sm:text-sm data-[state=active]:bg-emerald-500 data-[state=active]:text-white">概览</TabsTrigger>
               <TabsTrigger value="routines" className="text-xs sm:text-sm data-[state=active]:bg-emerald-500 data-[state=active]:text-white">边缘函数</TabsTrigger>
-              <TabsTrigger value="quotas" className="text-xs sm:text-sm data-[state=active]:bg-emerald-500 data-[state=active]:text-white">配额使用</TabsTrigger>
               <TabsTrigger value="traffic" className="text-xs sm:text-sm data-[state=active]:bg-emerald-500 data-[state=active]:text-white">流量趋势</TabsTrigger>
             </TabsList>
           </ScrollArea>
@@ -267,20 +282,49 @@ export default function ESASiteDetailPage() {
                   </div>
                   <div className="space-y-1">
                     <p className="text-sm text-muted-foreground">状态</p>
-                    <Badge variant={site.Status === "active" ? "success" : "secondary"}>{site.Status || "未知"}</Badge>
+                    <Badge variant={site.Status === "active" ? "success" : "secondary"}>
+                      {site.Status === "active" ? "已启用" : site.Status === "pending" ? "待验证" : site.Status || "未知"}
+                    </Badge>
                   </div>
                   <div className="space-y-1">
                     <p className="text-sm text-muted-foreground">接入类型</p>
-                    <p className="font-medium">{site.AccessType || site.Type || "NS"}</p>
+                    <p className="font-medium">{site.AccessType === "CNAME" ? "CNAME 接入" : site.AccessType === "NS" ? "NS 接入" : site.AccessType || site.Type || "NS"}</p>
                   </div>
                   <div className="space-y-1">
                     <p className="text-sm text-muted-foreground">加速区域</p>
-                    <p className="font-medium">{site.Coverage || site.Area || "全球"}</p>
+                    <p className="font-medium">
+                      {site.Coverage === "global" ? "全球加速" : site.Coverage === "domestic" ? "中国大陆" : site.Coverage === "overseas" ? "海外加速" : site.Coverage || site.Area || "全球"}
+                    </p>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-sm text-muted-foreground">CNAME 状态</p>
+                    <Badge variant={(site as any).CnameStatus === "configured" || (site as any).CnameStatus === "正常" ? "success" : "secondary"}>
+                      {(site as any).CnameStatus === "configured" ? "已配置" : (site as any).CnameStatus || "正常"}
+                    </Badge>
                   </div>
                   <div className="space-y-1">
                     <p className="text-sm text-muted-foreground">实例 ID</p>
-                    <p className="font-mono text-sm">{account?.instanceId || "-"}</p>
+                    <p className="font-mono text-sm break-all">{(site as any).InstanceId || account?.instanceId || "-"}</p>
                   </div>
+                  {(site as any).CreateTime && (
+                    <div className="space-y-1">
+                      <p className="text-sm text-muted-foreground">创建时间</p>
+                      <p className="font-medium">{new Date((site as any).CreateTime).toLocaleString("zh-CN")}</p>
+                    </div>
+                  )}
+                  {(site as any).NameServerList && (
+                    <div className="space-y-1 md:col-span-2">
+                      <p className="text-sm text-muted-foreground">NS 服务器</p>
+                      <div className="flex flex-wrap gap-1">
+                        {(Array.isArray((site as any).NameServerList) 
+                          ? (site as any).NameServerList 
+                          : [(site as any).NameServerList]
+                        ).filter(Boolean).map((ns: string, i: number) => (
+                          <Badge key={i} variant="outline" className="font-mono text-xs">{ns}</Badge>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </CardContent>
             </Card>
@@ -332,22 +376,28 @@ export default function ESASiteDetailPage() {
                               <FileCode className="h-4 w-4 text-purple-500" />
                               <span className="font-medium truncate max-w-[150px]">{routine.name}</span>
                             </div>
-                            <Badge variant={routine.status === "active" || routine.status === "online" ? "success" : "secondary"} className="text-xs">
-                              {routine.status || "未知"}
+                            <Badge variant={routine.status === "Running" || routine.status === "deployed" || routine.status === "active" ? "success" : routine.status === "Creating" ? "info" : "secondary"} className="text-xs">
+                              {routine.status === "Running" || routine.status === "deployed" ? "运行中" : routine.status === "Creating" ? "创建中" : routine.status === "NotOpened" ? "未开通" : routine.status || "未知"}
                             </Badge>
                           </div>
                           <div className="space-y-1 text-sm text-muted-foreground">
                             {routine.description && <p className="truncate">{routine.description}</p>}
-                            {routine.codeVersion && (
+                            {(routine as any).relatedRecord && (
                               <div className="flex justify-between">
-                                <span>版本</span>
-                                <span className="font-mono">{routine.codeVersion}</span>
+                                <span>访问域名</span>
+                                <span className="font-mono text-xs truncate max-w-[120px]">{(routine as any).relatedRecord}</span>
                               </div>
                             )}
-                            {routine.updateTime && (
+                            {(routine as any).env && (
                               <div className="flex justify-between">
-                                <span>更新时间</span>
-                                <span>{new Date(routine.updateTime).toLocaleDateString()}</span>
+                                <span>环境</span>
+                                <span>{(routine as any).env === "production" ? "生产" : (routine as any).env}</span>
+                              </div>
+                            )}
+                            {routine.createTime && (
+                              <div className="flex justify-between">
+                                <span>创建时间</span>
+                                <span>{new Date(routine.createTime).toLocaleDateString()}</span>
                               </div>
                             )}
                           </div>
@@ -442,64 +492,6 @@ export default function ESASiteDetailPage() {
                         <p className="font-medium">{formatNumber(account.erService.CpuTimeUsed || 0)} / {formatNumber(account.erService.CpuTimeQuota)} ms</p>
                       </div>
                     )}
-                  </div>
-                </CardContent>
-              </Card>
-            )}
-          </TabsContent>
-
-          <TabsContent value="quotas" className="space-y-4">
-            <Card>
-              <CardHeader><CardTitle className="flex items-center gap-2"><Settings className="h-5 w-5" /> 配额使用情况</CardTitle></CardHeader>
-              <CardContent>
-                {account?.quotas && account.quotas.length > 0 ? (
-                  <div className="space-y-4">
-                    {account.quotas.map((quota, i) => {
-                      const percent = quota.total > 0 ? (quota.used / quota.total) * 100 : 0;
-                      const remaining = Math.max(0, quota.total - quota.used);
-                      return (
-                        <div key={quota.quotaName || i} className="space-y-2">
-                          <div className="flex justify-between text-sm">
-                            <span className="font-medium">{quota.quotaName}</span>
-                            <span className="text-muted-foreground">
-                              已用 {quota.used} / {quota.total}，剩余 {remaining}
-                            </span>
-                          </div>
-                          <div className="h-3 bg-muted rounded-full overflow-hidden">
-                            <div 
-                              className={`h-full rounded-full transition-all ${
-                                percent > 90 ? "bg-red-500" : percent > 70 ? "bg-yellow-500" : "bg-emerald-500"
-                              }`}
-                              style={{ width: `${Math.min(100, percent)}%` }} 
-                            />
-                          </div>
-                          <p className="text-xs text-muted-foreground text-right">{percent.toFixed(1)}% 已使用</p>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <p className="text-muted-foreground text-center py-8">暂无配额数据</p>
-                )}
-              </CardContent>
-            </Card>
-
-            {/* Quota Pie Chart */}
-            {quotaChartData.length > 0 && (
-              <Card>
-                <CardHeader><CardTitle>配额使用分布</CardTitle></CardHeader>
-                <CardContent>
-                  <div className="h-[300px] sm:h-[400px]">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={quotaChartData} layout="vertical">
-                        <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                        <XAxis type="number" />
-                        <YAxis type="category" dataKey="name" width={120} tick={{ fontSize: 11 }} />
-                        <Tooltip />
-                        <Bar dataKey="used" stackId="a" fill="#10B981" name="已用" />
-                        <Bar dataKey="remaining" stackId="a" fill="#E5E7EB" name="剩余" />
-                      </BarChart>
-                    </ResponsiveContainer>
                   </div>
                 </CardContent>
               </Card>

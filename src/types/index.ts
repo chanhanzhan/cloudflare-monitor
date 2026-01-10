@@ -159,6 +159,8 @@ export interface ESASite {
   };
   requests?: number;
   bytes?: number;
+  timeSeriesRequests?: { time: string; value: number }[];
+  timeSeriesTraffic?: { time: string; value: number }[];
 }
 
 export interface ESAQuota {
