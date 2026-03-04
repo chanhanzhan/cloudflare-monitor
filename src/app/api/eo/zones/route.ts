@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
+import * as cache from "@/lib/cache";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+const CACHE_KEY = "eo_zones";
+const CACHE_TTL = 3 * 60 * 1000;
 
 function buf2hex(buffer: ArrayBuffer): string {
   return Array.from(new Uint8Array(buffer))
@@ -124,6 +129,9 @@ function parseEOAccountConfigs(): EOAccountConfig[] {
 
 export async function GET(request: NextRequest) {
   try {
+    const cached = cache.get(CACHE_KEY);
+    if (cached) return NextResponse.json(cached);
+
     const accountConfigs = parseEOAccountConfigs();
 
     if (accountConfigs.length === 0) {
@@ -299,11 +307,13 @@ export async function GET(request: NextRequest) {
       { totalFlux: 0, totalRequests: 0, totalBandwidth: 0, totalHits: 0 }
     );
     
-    return NextResponse.json({ 
+    const payload = { 
       Zones: flatZones, 
       accounts: allAccounts,
       overview: totalOverview,
-    });
+    };
+    cache.set(CACHE_KEY, payload, CACHE_TTL);
+    return NextResponse.json(payload);
   } catch (error) {
     console.error("EdgeOne Zones API error:", error);
     return NextResponse.json(

@@ -58,6 +58,7 @@ export default function CFZoneDetailPage() {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("hourly");
   const [firewallData, setFirewallData] = useState<any>(null);
+  const [firewallError, setFirewallError] = useState<string | null>(null);
   const [dnsData, setDnsData] = useState<any>(null);
   const [firewallLoading, setFirewallLoading] = useState(false);
   const [dnsLoading, setDnsLoading] = useState(false);
@@ -71,13 +72,17 @@ export default function CFZoneDetailPage() {
   @功能 减少初始加载时间，按需获取防火墙事件和 DNS 查询统计
   */
   useEffect(() => {
-    if (activeTab === "firewall" && !firewallData && !firewallLoading) {
+    if (activeTab === "firewall" && !firewallData && !firewallError && !firewallLoading) {
       setFirewallLoading(true);
       fetch(`/api/cf/firewall?domain=${encodeURIComponent(domain)}`)
         .then((r) => r.json())
         .then((data) => {
           const zoneEvents = data.accounts?.flatMap((a: any) => a.zones || [])?.find((z: any) => z.domain === domain);
-          setFirewallData(zoneEvents?.events || null);
+          if (zoneEvents?.error) {
+            setFirewallError(zoneEvents.error);
+          } else {
+            setFirewallData(zoneEvents?.events || null);
+          }
         })
         .catch(() => setFirewallData(null))
         .finally(() => setFirewallLoading(false));
@@ -93,15 +98,18 @@ export default function CFZoneDetailPage() {
         .catch(() => setDnsData(null))
         .finally(() => setDnsLoading(false));
     }
-  }, [activeTab, domain, firewallData, firewallLoading, dnsData, dnsLoading]);
+  }, [activeTab, domain, firewallData, firewallError, firewallLoading, dnsData, dnsLoading]);
 
+  /*
+  fetchZoneData 只查询单个域名的分析数据
+  @功能 通过 ?domain= 参数只获取该域名数据，避免查询全部域名
+  */
   const fetchZoneData = async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/cf/analytics");
+      const res = await fetch(`/api/cf/analytics?stream=false&domain=${encodeURIComponent(domain)}`);
       const data: CFAnalyticsData = await res.json();
       
-      // Find the zone by domain
       for (const account of data.accounts || []) {
         const found = account.zones?.find((z) => z.domain === domain);
         if (found) {
@@ -455,9 +463,41 @@ export default function CFZoneDetailPage() {
           </TabsContent>
 
           <TabsContent value="cache" className="space-y-4">
+            {/* 缓存统计指标卡片 */}
+            <div className="grid gap-3 sm:gap-4 grid-cols-2 lg:grid-cols-4">
+              <Card className="bg-gradient-to-br from-green-500/10 to-green-600/5 border-green-500/20">
+                <CardContent className="p-4 sm:p-6">
+                  <p className="text-xs text-muted-foreground uppercase tracking-wide">缓存命中率(流量)</p>
+                  <p className="text-lg sm:text-2xl font-bold text-green-600 dark:text-green-400">{stats.cacheRate.toFixed(1)}%</p>
+                  <p className="text-xs text-muted-foreground mt-1">{formatBytes(stats.cachedBytes)} / {formatBytes(stats.totalBytes)}</p>
+                </CardContent>
+              </Card>
+              <Card className="bg-gradient-to-br from-blue-500/10 to-blue-600/5 border-blue-500/20">
+                <CardContent className="p-4 sm:p-6">
+                  <p className="text-xs text-muted-foreground uppercase tracking-wide">缓存命中率(请求)</p>
+                  <p className="text-lg sm:text-2xl font-bold text-blue-600 dark:text-blue-400">{stats.totalRequests > 0 ? ((stats.cachedRequests / stats.totalRequests) * 100).toFixed(1) : "0.0"}%</p>
+                  <p className="text-xs text-muted-foreground mt-1">{formatNumber(stats.cachedRequests)} / {formatNumber(stats.totalRequests)}</p>
+                </CardContent>
+              </Card>
+              <Card className="bg-gradient-to-br from-purple-500/10 to-purple-600/5 border-purple-500/20">
+                <CardContent className="p-4 sm:p-6">
+                  <p className="text-xs text-muted-foreground uppercase tracking-wide">缓存流量</p>
+                  <p className="text-lg sm:text-2xl font-bold text-purple-600 dark:text-purple-400">{formatBytes(stats.cachedBytes)}</p>
+                  <p className="text-xs text-muted-foreground mt-1">节省源站流量</p>
+                </CardContent>
+              </Card>
+              <Card className="bg-gradient-to-br from-orange-500/10 to-orange-600/5 border-orange-500/20">
+                <CardContent className="p-4 sm:p-6">
+                  <p className="text-xs text-muted-foreground uppercase tracking-wide">未缓存流量</p>
+                  <p className="text-lg sm:text-2xl font-bold text-orange-600 dark:text-orange-400">{formatBytes(stats.totalBytes - stats.cachedBytes)}</p>
+                  <p className="text-xs text-muted-foreground mt-1">需要回源的流量</p>
+                </CardContent>
+              </Card>
+            </div>
+            {/* 缓存趋势图表 */}
             <div className="grid gap-4 md:grid-cols-2">
               <Card>
-                <CardHeader><CardTitle>缓存流量趋势</CardTitle></CardHeader>
+                <CardHeader><CardTitle>缓存流量趋势 (72h)</CardTitle></CardHeader>
                 <CardContent>
                   <div className="h-[300px] sm:h-[400px]">
                     <ResponsiveContainer width="100%" height="100%">
@@ -533,18 +573,24 @@ export default function CFZoneDetailPage() {
               <CardHeader><CardTitle>浏览器分布 TOP 10</CardTitle></CardHeader>
               <CardContent>
                 <div className="space-y-3">
-                  {browserData.length > 0 ? browserData.map((item, i) => (
-                    <div key={i} className="flex items-center gap-4">
-                      <span className="w-6 text-center font-medium text-muted-foreground">{i + 1}</span>
-                      <div className="flex-1">
-                        <p className="text-sm truncate">{item.name || "Unknown"}</p>
-                        <div className="h-2 bg-muted rounded-full mt-1">
-                          <div className="h-full bg-cloudflare-orange rounded-full" style={{ width: `${(item.pageViews / (browserData[0]?.pageViews || 1)) * 100}%` }} />
+                  {browserData.length > 0 ? (() => {
+                    const total = browserData.reduce((s, d) => s + d.pageViews, 0);
+                    return browserData.map((item, i) => (
+                      <div key={i} className="flex items-center gap-4">
+                        <span className="w-6 text-center font-medium text-muted-foreground">{i + 1}</span>
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2">
+                            <p className="text-sm truncate">{item.name || "Unknown"}</p>
+                            <span className="text-xs text-muted-foreground">({total > 0 ? ((item.pageViews / total) * 100).toFixed(1) : 0}%)</span>
+                          </div>
+                          <div className="h-2 bg-muted rounded-full mt-1">
+                            <div className="h-full bg-cloudflare-orange rounded-full" style={{ width: `${(item.pageViews / (browserData[0]?.pageViews || 1)) * 100}%` }} />
+                          </div>
                         </div>
+                        <span className="text-sm text-muted-foreground whitespace-nowrap">{formatNumber(item.pageViews)} PV</span>
                       </div>
-                      <span className="text-sm text-muted-foreground">{formatNumber(item.pageViews)} PV</span>
-                    </div>
-                  )) : <p className="text-muted-foreground text-center py-8">暂无数据</p>}
+                    ));
+                  })() : <p className="text-muted-foreground text-center py-8">暂无数据</p>}
                 </div>
               </CardContent>
             </Card>
@@ -555,24 +601,30 @@ export default function CFZoneDetailPage() {
               <CardHeader><CardTitle>状态码分布 TOP 10</CardTitle></CardHeader>
               <CardContent>
                 <div className="space-y-3">
-                  {statusCodeData.length > 0 ? statusCodeData.map((item, i) => (
-                    <div key={i} className="flex items-center gap-4">
-                      <span className="w-6 text-center font-medium text-muted-foreground">{i + 1}</span>
-                      <div className="flex-1">
-                        <p className="text-sm font-mono">{item.name}</p>
-                        <div className="h-2 bg-muted rounded-full mt-1">
-                          <div 
-                            className="h-full rounded-full" 
-                            style={{ 
-                              width: `${(item.requests / (statusCodeData[0]?.requests || 1)) * 100}%`,
-                              backgroundColor: item.name.startsWith('2') ? '#10B981' : item.name.startsWith('3') ? '#3B82F6' : item.name.startsWith('4') ? '#F59E0B' : '#EF4444'
-                            }} 
-                          />
+                  {statusCodeData.length > 0 ? (() => {
+                    const total = statusCodeData.reduce((s, d) => s + d.requests, 0);
+                    return statusCodeData.map((item, i) => (
+                      <div key={i} className="flex items-center gap-4">
+                        <span className="w-6 text-center font-medium text-muted-foreground">{i + 1}</span>
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2">
+                            <p className="text-sm font-mono">{item.name}</p>
+                            <span className="text-xs text-muted-foreground">({total > 0 ? ((item.requests / total) * 100).toFixed(1) : 0}%)</span>
+                          </div>
+                          <div className="h-2 bg-muted rounded-full mt-1">
+                            <div 
+                              className="h-full rounded-full" 
+                              style={{ 
+                                width: `${(item.requests / (statusCodeData[0]?.requests || 1)) * 100}%`,
+                                backgroundColor: item.name.startsWith('2') ? '#10B981' : item.name.startsWith('3') ? '#3B82F6' : item.name.startsWith('4') ? '#F59E0B' : '#EF4444'
+                              }} 
+                            />
+                          </div>
                         </div>
+                        <span className="text-sm text-muted-foreground whitespace-nowrap">{formatNumber(item.requests)}</span>
                       </div>
-                      <span className="text-sm text-muted-foreground">{formatNumber(item.requests)}</span>
-                    </div>
-                  )) : <p className="text-muted-foreground text-center py-8">暂无数据</p>}
+                    ));
+                  })() : <p className="text-muted-foreground text-center py-8">暂无数据</p>}
                 </div>
               </CardContent>
             </Card>
@@ -583,18 +635,27 @@ export default function CFZoneDetailPage() {
               <CardHeader><CardTitle>内容类型分布 TOP 10</CardTitle></CardHeader>
               <CardContent>
                 <div className="space-y-3">
-                  {contentTypeData.length > 0 ? contentTypeData.map((item, i) => (
-                    <div key={i} className="flex items-center gap-4">
-                      <span className="w-6 text-center font-medium text-muted-foreground">{i + 1}</span>
-                      <div className="flex-1">
-                        <p className="text-sm font-mono truncate">{item.name || "Unknown"}</p>
-                        <div className="h-2 bg-muted rounded-full mt-1">
-                          <div className="h-full bg-purple-500 rounded-full" style={{ width: `${(item.bytes / (contentTypeData[0]?.bytes || 1)) * 100}%` }} />
+                  {contentTypeData.length > 0 ? (() => {
+                    const totalBytes = contentTypeData.reduce((s, d) => s + d.bytes, 0);
+                    return contentTypeData.map((item, i) => (
+                      <div key={i} className="flex items-center gap-4">
+                        <span className="w-6 text-center font-medium text-muted-foreground">{i + 1}</span>
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2">
+                            <p className="text-sm font-mono truncate">{item.name || "Unknown"}</p>
+                            <span className="text-xs text-muted-foreground">({totalBytes > 0 ? ((item.bytes / totalBytes) * 100).toFixed(1) : 0}%)</span>
+                          </div>
+                          <div className="h-2 bg-muted rounded-full mt-1">
+                            <div className="h-full bg-purple-500 rounded-full" style={{ width: `${(item.bytes / (contentTypeData[0]?.bytes || 1)) * 100}%` }} />
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <span className="text-sm text-muted-foreground whitespace-nowrap">{formatBytes(item.bytes)}</span>
+                          <p className="text-xs text-muted-foreground">{formatNumber(item.requests)} 次</p>
                         </div>
                       </div>
-                      <span className="text-sm text-muted-foreground">{formatBytes(item.bytes)}</span>
-                    </div>
-                  )) : <p className="text-muted-foreground text-center py-8">暂无数据</p>}
+                    ));
+                  })() : <p className="text-muted-foreground text-center py-8">暂无数据</p>}
                 </div>
               </CardContent>
             </Card>
@@ -725,7 +786,89 @@ export default function CFZoneDetailPage() {
                     </div>
                   </CardContent>
                 </Card>
+                {/* 客户端 IP TOP 10 */}
+                {firewallData.byIP?.length > 0 && (
+                  <Card>
+                    <CardHeader><CardTitle>客户端 IP TOP 10 (24h)</CardTitle></CardHeader>
+                    <CardContent>
+                      <div className="space-y-3">
+                        {firewallData.byIP.map((item: any, i: number) => (
+                          <div key={i} className="flex items-center gap-4">
+                            <span className="w-6 text-center font-medium text-muted-foreground">{i + 1}</span>
+                            <div className="flex-1">
+                              <p className="text-sm font-mono">{item.ip}</p>
+                              <div className="h-2 bg-muted rounded-full mt-1">
+                                <div className="h-full bg-cyan-500 rounded-full" style={{ width: `${(item.count / (firewallData.byIP[0]?.count || 1)) * 100}%` }} />
+                              </div>
+                            </div>
+                            <span className="text-sm text-muted-foreground">{formatNumber(item.count)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+                {/* 请求方法分布 */}
+                {firewallData.byMethod?.length > 0 && (
+                  <Card>
+                    <CardHeader><CardTitle>请求方法分布 (24h)</CardTitle></CardHeader>
+                    <CardContent>
+                      <div className="space-y-3">
+                        {firewallData.byMethod.map((item: any, i: number) => (
+                          <div key={i} className="flex items-center gap-4">
+                            <span className="w-6 text-center font-medium text-muted-foreground">{i + 1}</span>
+                            <div className="flex-1">
+                              <p className="text-sm font-mono font-semibold">{item.method}</p>
+                              <div className="h-2 bg-muted rounded-full mt-1">
+                                <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${(item.count / (firewallData.byMethod[0]?.count || 1)) * 100}%` }} />
+                              </div>
+                            </div>
+                            <span className="text-sm text-muted-foreground">{formatNumber(item.count)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+                {/* 最近事件日志 */}
+                {firewallData.recentEvents?.length > 0 && (
+                  <Card className="md:col-span-2">
+                    <CardHeader><CardTitle>最近防火墙事件 (24h)</CardTitle></CardHeader>
+                    <CardContent>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs sm:text-sm">
+                          <thead>
+                            <tr className="border-b text-left text-muted-foreground">
+                              <th className="pb-2 pr-3">时间</th>
+                              <th className="pb-2 pr-3">动作</th>
+                              <th className="pb-2 pr-3">来源</th>
+                              <th className="pb-2 pr-3">IP</th>
+                              <th className="pb-2 pr-3">国家</th>
+                              <th className="pb-2 pr-3">方法</th>
+                              <th className="pb-2">路径</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {firewallData.recentEvents.map((evt: any, i: number) => (
+                              <tr key={i} className="border-b border-muted/50 hover:bg-muted/30">
+                                <td className="py-1.5 pr-3 font-mono whitespace-nowrap">{evt.time ? new Date(evt.time).toLocaleTimeString("zh-CN") : "-"}</td>
+                                <td className="py-1.5 pr-3"><span className={`px-1.5 py-0.5 rounded text-xs font-medium ${evt.action === "block" ? "bg-red-500/10 text-red-500" : evt.action === "challenge" || evt.action === "managedchallenge" ? "bg-yellow-500/10 text-yellow-500" : "bg-blue-500/10 text-blue-500"}`}>{evt.action}</span></td>
+                                <td className="py-1.5 pr-3 text-muted-foreground">{evt.source}</td>
+                                <td className="py-1.5 pr-3 font-mono">{evt.ip}</td>
+                                <td className="py-1.5 pr-3">{evt.country}</td>
+                                <td className="py-1.5 pr-3 font-mono">{evt.method}</td>
+                                <td className="py-1.5 font-mono truncate max-w-[200px]" title={evt.path}>{evt.path}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
               </div>
+            ) : firewallError ? (
+              <Card><CardContent className="p-8 text-center text-amber-600 dark:text-amber-400">{firewallError}</CardContent></Card>
             ) : (
               <Card><CardContent className="p-8 text-center text-muted-foreground">点击标签加载防火墙数据</CardContent></Card>
             )}

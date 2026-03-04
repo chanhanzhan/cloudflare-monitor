@@ -20,10 +20,54 @@ import type { ESAData, ESASite, ESAAccount, ESARoutine } from "@/types";
 ESA_TAB_ITEMS ESA 站点详情页标签项定义
 @功能 定义 ESA 站点详情页的所有标签页
 */
+/*
+ESA 国家代码中文映射
+*/
+const COUNTRY_ZH: Record<string, string> = {
+  CN: "中国", US: "美国", JP: "日本", KR: "韩国", SG: "新加坡",
+  HK: "中国香港", TW: "中国台湾", MO: "中国澳门", DE: "德国", FR: "法国",
+  GB: "英国", CA: "加拿大", AU: "澳大利亚", IN: "印度", BR: "巴西",
+  RU: "俄罗斯", NL: "荷兰", IT: "意大利", ES: "西班牙", SE: "瑞典",
+  CH: "瑞士", PL: "波兰", ID: "印度尼西亚", TH: "泰国", VN: "越南",
+  MY: "马来西亚", PH: "菲律宾", FI: "芬兰", NO: "挪威", DK: "丹麦",
+  IE: "爱尔兰", PT: "葡萄牙", GR: "希腊", NZ: "新西兰", AR: "阿根廷",
+  MX: "墨西哥", ZA: "南非", AE: "阿联酋", SA: "沙特阿拉伯", TR: "土耳其",
+  UA: "乌克兰", IL: "以色列", CZ: "捷克", AT: "奥地利", BE: "比利时",
+  RO: "罗马尼亚", HU: "匈牙利", CL: "智利", CO: "哥伦比亚",
+};
+
+/*
+ESA 缓存状态中文映射
+*/
+const CACHE_STATUS_ZH: Record<string, string> = {
+  HIT: "命中", MISS: "未命中", EXPIRED: "已过期", STALE: "陈旧",
+  BYPASS: "绕过", REVALIDATED: "重新验证", DYNAMIC: "动态内容",
+  "NONE/UNKNOWN": "无/未知", UPDATING: "更新中",
+};
+
+/*
+translateName 通用名称翻译函数
+@param name 原始名称
+@param map 翻译映射表
+@return 翻译后的名称，未匹配时返回原值
+*/
+const translateName = (name: string, map: Record<string, string>) =>
+  map[name] || map[name.toUpperCase()] || name;
+
 const ESA_TAB_ITEMS = [
   { value: "overview", label: "概览" },
-  { value: "routines", label: "边缘函数" },
   { value: "traffic", label: "流量趋势" },
+  { value: "country", label: "地区分布" },
+  { value: "status", label: "状态码" },
+  { value: "cache", label: "缓存分析" },
+  { value: "content", label: "内容类型" },
+  { value: "host", label: "域名分布" },
+  { value: "device", label: "设备/浏览器" },
+  { value: "method", label: "请求方法" },
+  { value: "protocol", label: "协议版本" },
+  { value: "ip", label: "客户端 IP" },
+  { value: "referer", label: "来源分析" },
+  { value: "routines", label: "边缘函数" },
 ];
 
 interface TrafficData {
@@ -41,6 +85,10 @@ export default function ESASiteDetailPage() {
   const [account, setAccount] = useState<ESAAccount | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("overview");
+
+  /* TOP 数据状态（懒加载） */
+  const [topData, setTopData] = useState<Record<string, { name: string; value: number }[]>>({});
+  const [topLoaded, setTopLoaded] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     fetchSiteData();
@@ -85,6 +133,70 @@ export default function ESASiteDetailPage() {
       setLoading(false);
     }
   };
+
+  /*
+  懒加载 TOP 数据 - 仅在切换到对应标签时触发
+  @功能 按需获取地区/状态码/缓存/内容类型/浏览器/设备/方法/协议等 TOP 数据
+  */
+  useEffect(() => {
+    if (loading || !site?.SiteId || topLoaded.has(activeTab)) return;
+    const base = `/api/esa/top?siteId=${site.SiteId}`;
+
+    const tabDimensionMap: Record<string, { key: string; dimension: string; fieldName?: string }[]> = {
+      country: [
+        { key: "country", dimension: "ClientCountryCode" },
+      ],
+      status: [
+        { key: "statusCode", dimension: "EdgeResponseStatusCode", fieldName: "Requests" },
+        { key: "originStatus", dimension: "OriginResponseStatusCode", fieldName: "Requests" },
+      ],
+      cache: [
+        { key: "cacheStatus", dimension: "EdgeCacheStatus", fieldName: "Requests" },
+      ],
+      content: [
+        { key: "contentType", dimension: "EdgeResponseContentType" },
+      ],
+      device: [
+        { key: "browser", dimension: "ClientBrowser", fieldName: "Requests" },
+        { key: "device", dimension: "ClientDevice", fieldName: "Requests" },
+        { key: "os", dimension: "ClientOS", fieldName: "Requests" },
+      ],
+      method: [
+        { key: "method", dimension: "ClientRequestMethod", fieldName: "Requests" },
+      ],
+      protocol: [
+        { key: "protocol", dimension: "ClientRequestProtocol", fieldName: "Requests" },
+        { key: "ssl", dimension: "ClientSSLProtocol", fieldName: "Requests" },
+      ],
+      host: [
+        { key: "host", dimension: "ClientRequestHost" },
+      ],
+      ip: [
+        { key: "clientIP", dimension: "ClientIP", fieldName: "Requests" },
+      ],
+      referer: [
+        { key: "referer", dimension: "ClientRequestReferer" },
+      ],
+    };
+
+    const configs = tabDimensionMap[activeTab];
+    if (!configs) return;
+
+    Promise.all(
+      configs.map(async ({ key, dimension, fieldName }) => {
+        try {
+          const url = `${base}&dimension=${dimension}${fieldName ? `&fieldName=${fieldName}` : ""}`;
+          const res = await fetch(url);
+          const json = await res.json();
+          setTopData((prev) => ({ ...prev, [key]: json.data || [] }));
+        } catch (err) {
+          console.error(`ESA top ${key} error:`, err);
+        }
+      })
+    ).then(() => {
+      setTopLoaded((prev) => new Set(prev).add(activeTab));
+    });
+  }, [activeTab, loading, site, topLoaded]);
 
   // Transform time series data for charts
   const trafficData = useMemo(() => {
@@ -364,6 +476,67 @@ export default function ESASiteDetailPage() {
                 </div>
               </CardContent>
             </Card>
+
+            {/* 配额使用 */}
+            {account?.quotas && account.quotas.length > 0 && (
+              <Card>
+                <CardHeader><CardTitle className="flex items-center gap-2"><Database className="h-5 w-5" /> 资源配额使用</CardTitle></CardHeader>
+                <CardContent>
+                  <div className="grid gap-4 md:grid-cols-2">
+                    {account.quotas.filter(q => q.total > 0).map((q, i) => {
+                      const pct = q.total > 0 ? (q.used / q.total) * 100 : 0;
+                      const quotaLabel: Record<string, string> = {
+                        customHttpCert: "自定义证书", transition_rule: "转换规则",
+                        "cache_rules|rule_quota": "缓存规则", "redirect_rules|rule_quota": "重定向规则",
+                        "origin_rules|rule_quota": "回源规则", "https|rule_quota": "HTTPS 规则",
+                        "configuration_rules|rule_quota": "配置规则", "compression_rules|rule_quota": "压缩规则",
+                        "ratelimit_rules|rule_quota": "速率限制规则", "waf_rules|rule_quota": "WAF 规则",
+                        ssl_certificates: "SSL 证书", waiting_room: "等候室",
+                      };
+                      return (
+                        <div key={i} className="space-y-2">
+                          <div className="flex justify-between text-sm">
+                            <span className="text-muted-foreground">{quotaLabel[q.quotaName] || q.quotaName}</span>
+                            <span className="font-medium">{q.used} / {q.total}</span>
+                          </div>
+                          <div className="h-2 bg-muted rounded-full">
+                            <div
+                              className={`h-full rounded-full transition-all ${pct > 90 ? "bg-red-500" : pct > 70 ? "bg-yellow-500" : "bg-emerald-500"}`}
+                              style={{ width: `${Math.min(100, pct)}%` }}
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* 其他站点 */}
+            {account && account.sites.length > 1 && (
+              <Card>
+                <CardHeader><CardTitle className="flex items-center gap-2"><Globe className="h-5 w-5" /> 同账户其他站点</CardTitle></CardHeader>
+                <CardContent>
+                  <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+                    {account.sites.filter(s => String(s.SiteId) !== String(site.SiteId)).map((s, i) => (
+                      <div key={i} className="flex items-center justify-between p-3 border rounded-lg hover:bg-muted/50 transition-colors">
+                        <div className="min-w-0">
+                          <p className="font-medium truncate">{s.SiteName}</p>
+                          <div className="flex gap-3 text-xs text-muted-foreground mt-1">
+                            <span>{formatNumber(s.requests || 0)} 请求</span>
+                            <span>{formatBytes(s.bytes || 0)}</span>
+                          </div>
+                        </div>
+                        <Badge variant={s.Status === "active" ? "success" : "secondary"} className="flex-shrink-0 ml-2">
+                          {s.Status === "active" ? "启用" : s.Status || "未知"}
+                        </Badge>
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
           </TabsContent>
 
           <TabsContent value="routines" className="space-y-4">
@@ -543,6 +716,299 @@ export default function ESASiteDetailPage() {
               </CardContent>
             </Card>
           </TabsContent>
+
+          {/* 地区分布 */}
+          <TabsContent value="country">
+            <Card>
+              <CardHeader><CardTitle>地区分布 TOP 10 (24h)</CardTitle></CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  {(topData.country?.length ?? 0) > 0 ? topData.country.map((item, i) => (
+                    <div key={i} className="flex items-center gap-4">
+                      <span className="w-6 text-center font-medium text-muted-foreground">{i + 1}</span>
+                      <div className="flex-1">
+                        <p className="text-sm">{translateName(item.name, COUNTRY_ZH)}</p>
+                        <div className="h-2 bg-muted rounded-full mt-1">
+                          <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${(item.value / (topData.country[0]?.value || 1)) * 100}%` }} />
+                        </div>
+                      </div>
+                      <span className="text-sm text-muted-foreground">{formatBytes(item.value)}</span>
+                    </div>
+                  )) : <p className="text-muted-foreground text-center py-8">{topLoaded.has("country") ? "暂无数据" : "加载中..."}</p>}
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* 状态码 */}
+          <TabsContent value="status" className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-2">
+              <Card>
+                <CardHeader><CardTitle>边缘状态码 TOP 10</CardTitle></CardHeader>
+                <CardContent>
+                  <div className="space-y-3">
+                    {(topData.statusCode?.length ?? 0) > 0 ? topData.statusCode.map((item, i) => (
+                      <div key={i} className="flex items-center gap-4">
+                        <span className="w-6 text-center font-medium text-muted-foreground">{i + 1}</span>
+                        <div className="flex-1">
+                          <p className="text-sm font-mono">{item.name}</p>
+                          <div className="h-2 bg-muted rounded-full mt-1">
+                            <div className="h-full rounded-full" style={{ width: `${(item.value / (topData.statusCode[0]?.value || 1)) * 100}%`, backgroundColor: item.name.startsWith("2") ? "#10B981" : item.name.startsWith("3") ? "#3B82F6" : item.name.startsWith("4") ? "#F59E0B" : "#EF4444" }} />
+                          </div>
+                        </div>
+                        <span className="text-sm text-muted-foreground">{formatNumber(item.value)}</span>
+                      </div>
+                    )) : <p className="text-muted-foreground text-center py-8">{topLoaded.has("status") ? "暂无数据" : "加载中..."}</p>}
+                  </div>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader><CardTitle>源站状态码 TOP 10</CardTitle></CardHeader>
+                <CardContent>
+                  <div className="space-y-3">
+                    {(topData.originStatus?.length ?? 0) > 0 ? topData.originStatus.map((item, i) => (
+                      <div key={i} className="flex items-center gap-4">
+                        <span className="w-6 text-center font-medium text-muted-foreground">{i + 1}</span>
+                        <div className="flex-1">
+                          <p className="text-sm font-mono">{item.name}</p>
+                          <div className="h-2 bg-muted rounded-full mt-1">
+                            <div className="h-full rounded-full" style={{ width: `${(item.value / (topData.originStatus[0]?.value || 1)) * 100}%`, backgroundColor: item.name.startsWith("2") ? "#10B981" : item.name.startsWith("3") ? "#3B82F6" : item.name.startsWith("4") ? "#F59E0B" : "#EF4444" }} />
+                          </div>
+                        </div>
+                        <span className="text-sm text-muted-foreground">{formatNumber(item.value)}</span>
+                      </div>
+                    )) : <p className="text-muted-foreground text-center py-8">{topLoaded.has("status") ? "暂无数据" : "加载中..."}</p>}
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          </TabsContent>
+
+          {/* 缓存分析 */}
+          <TabsContent value="cache">
+            <Card>
+              <CardHeader><CardTitle>缓存状态分布</CardTitle></CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  {(topData.cacheStatus?.length ?? 0) > 0 ? topData.cacheStatus.map((item, i) => (
+                    <div key={i} className="flex items-center gap-4">
+                      <span className="w-6 text-center font-medium text-muted-foreground">{i + 1}</span>
+                      <div className="flex-1">
+                        <p className="text-sm font-mono">{translateName(item.name, CACHE_STATUS_ZH)}</p>
+                        <div className="h-2 bg-muted rounded-full mt-1">
+                          <div className="h-full rounded-full" style={{ width: `${(item.value / (topData.cacheStatus[0]?.value || 1)) * 100}%`, backgroundColor: item.name.toLowerCase().includes("hit") ? "#10B981" : "#F59E0B" }} />
+                        </div>
+                      </div>
+                      <span className="text-sm text-muted-foreground">{formatNumber(item.value)}</span>
+                    </div>
+                  )) : <p className="text-muted-foreground text-center py-8">{topLoaded.has("cache") ? "暂无数据" : "加载中..."}</p>}
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* 内容类型 */}
+          <TabsContent value="content">
+            <Card>
+              <CardHeader><CardTitle>内容类型分布 TOP 10</CardTitle></CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  {(topData.contentType?.length ?? 0) > 0 ? topData.contentType.map((item, i) => (
+                    <div key={i} className="flex items-center gap-4">
+                      <span className="w-6 text-center font-medium text-muted-foreground">{i + 1}</span>
+                      <div className="flex-1">
+                        <p className="text-sm font-mono truncate">{item.name}</p>
+                        <div className="h-2 bg-muted rounded-full mt-1">
+                          <div className="h-full bg-purple-500 rounded-full" style={{ width: `${(item.value / (topData.contentType[0]?.value || 1)) * 100}%` }} />
+                        </div>
+                      </div>
+                      <span className="text-sm text-muted-foreground">{formatBytes(item.value)}</span>
+                    </div>
+                  )) : <p className="text-muted-foreground text-center py-8">{topLoaded.has("content") ? "暂无数据" : "加载中..."}</p>}
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* 设备/浏览器 */}
+          <TabsContent value="device" className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-3">
+              {[
+                { key: "browser", title: "浏览器分布", color: "bg-blue-500" },
+                { key: "device", title: "设备类型分布", color: "bg-orange-500" },
+                { key: "os", title: "操作系统分布", color: "bg-green-500" },
+              ].map(({ key, title, color }) => (
+                <Card key={key}>
+                  <CardHeader><CardTitle className="text-sm">{title}</CardTitle></CardHeader>
+                  <CardContent>
+                    <div className="space-y-3">
+                      {(topData[key]?.length ?? 0) > 0 ? topData[key].map((item, i) => (
+                        <div key={i} className="flex items-center gap-3">
+                          <span className="w-5 text-center text-xs font-medium text-muted-foreground">{i + 1}</span>
+                          <div className="flex-1">
+                            <p className="text-xs truncate">{item.name || "Unknown"}</p>
+                            <div className="h-1.5 bg-muted rounded-full mt-1">
+                              <div className={`h-full ${color} rounded-full`} style={{ width: `${(item.value / (topData[key][0]?.value || 1)) * 100}%` }} />
+                            </div>
+                          </div>
+                          <span className="text-xs text-muted-foreground">{formatNumber(item.value)}</span>
+                        </div>
+                      )) : <p className="text-muted-foreground text-center py-4 text-xs">{topLoaded.has("device") ? "暂无数据" : "加载中..."}</p>}
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          </TabsContent>
+
+          {/* 请求方法 */}
+          <TabsContent value="method">
+            <Card>
+              <CardHeader><CardTitle>HTTP 请求方法分布</CardTitle></CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  {(topData.method?.length ?? 0) > 0 ? topData.method.map((item, i) => (
+                    <div key={i} className="flex items-center gap-4">
+                      <span className="w-6 text-center font-medium text-muted-foreground">{i + 1}</span>
+                      <div className="flex-1">
+                        <p className="text-sm font-mono font-semibold">{item.name}</p>
+                        <div className="h-2 bg-muted rounded-full mt-1">
+                          <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${(item.value / (topData.method[0]?.value || 1)) * 100}%` }} />
+                        </div>
+                      </div>
+                      <span className="text-sm text-muted-foreground">{formatNumber(item.value)}</span>
+                    </div>
+                  )) : <p className="text-muted-foreground text-center py-8">{topLoaded.has("method") ? "暂无数据" : "加载中..."}</p>}
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* 协议版本 */}
+          <TabsContent value="protocol" className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-2">
+              <Card>
+                <CardHeader><CardTitle>HTTP 协议版本</CardTitle></CardHeader>
+                <CardContent>
+                  <div className="space-y-3">
+                    {(topData.protocol?.length ?? 0) > 0 ? topData.protocol.map((item, i) => (
+                      <div key={i} className="flex items-center gap-4">
+                        <span className="w-6 text-center font-medium text-muted-foreground">{i + 1}</span>
+                        <div className="flex-1">
+                          <p className="text-sm font-mono">{item.name}</p>
+                          <div className="h-2 bg-muted rounded-full mt-1">
+                            <div className="h-full bg-blue-500 rounded-full" style={{ width: `${(item.value / (topData.protocol[0]?.value || 1)) * 100}%` }} />
+                          </div>
+                        </div>
+                        <span className="text-sm text-muted-foreground">{formatNumber(item.value)}</span>
+                      </div>
+                    )) : <p className="text-muted-foreground text-center py-8">{topLoaded.has("protocol") ? "暂无数据" : "加载中..."}</p>}
+                  </div>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader><CardTitle>SSL/TLS 版本</CardTitle></CardHeader>
+                <CardContent>
+                  <div className="space-y-3">
+                    {(topData.ssl?.length ?? 0) > 0 ? topData.ssl.map((item, i) => (
+                      <div key={i} className="flex items-center gap-4">
+                        <span className="w-6 text-center font-medium text-muted-foreground">{i + 1}</span>
+                        <div className="flex-1">
+                          <p className="text-sm font-mono">{item.name}</p>
+                          <div className="h-2 bg-muted rounded-full mt-1">
+                            <div className="h-full bg-green-500 rounded-full" style={{ width: `${(item.value / (topData.ssl[0]?.value || 1)) * 100}%` }} />
+                          </div>
+                        </div>
+                        <span className="text-sm text-muted-foreground">{formatNumber(item.value)}</span>
+                      </div>
+                    )) : <p className="text-muted-foreground text-center py-8">{topLoaded.has("protocol") ? "暂无数据" : "加载中..."}</p>}
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          </TabsContent>
+
+          {/* 域名分布 */}
+          <TabsContent value="host">
+            <Card>
+              <CardHeader><CardTitle>域名流量分布 TOP 10</CardTitle></CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  {(topData.host?.length ?? 0) > 0 ? (() => {
+                    const total = topData.host.reduce((s, d) => s + d.value, 0);
+                    return topData.host.map((item, i) => (
+                      <div key={i} className="flex items-center gap-4">
+                        <span className="w-6 text-center font-medium text-muted-foreground">{i + 1}</span>
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2">
+                            <p className="text-sm font-mono truncate">{item.name}</p>
+                            <span className="text-xs text-muted-foreground">({total > 0 ? ((item.value / total) * 100).toFixed(1) : 0}%)</span>
+                          </div>
+                          <div className="h-2 bg-muted rounded-full mt-1">
+                            <div className="h-full bg-cyan-500 rounded-full" style={{ width: `${(item.value / (topData.host[0]?.value || 1)) * 100}%` }} />
+                          </div>
+                        </div>
+                        <span className="text-sm text-muted-foreground whitespace-nowrap">{formatBytes(item.value)}</span>
+                      </div>
+                    ));
+                  })() : <p className="text-muted-foreground text-center py-8">{topLoaded.has("host") ? "暂无数据" : "加载中..."}</p>}
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* 客户端 IP */}
+          <TabsContent value="ip">
+            <Card>
+              <CardHeader><CardTitle>客户端 IP TOP 10</CardTitle></CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  {(topData.clientIP?.length ?? 0) > 0 ? topData.clientIP.map((item, i) => (
+                    <div key={i} className="flex items-center gap-4">
+                      <span className="w-6 text-center font-medium text-muted-foreground">{i + 1}</span>
+                      <div className="flex-1">
+                        <p className="text-sm font-mono">{item.name}</p>
+                        <div className="h-2 bg-muted rounded-full mt-1">
+                          <div className="h-full bg-rose-500 rounded-full" style={{ width: `${(item.value / (topData.clientIP[0]?.value || 1)) * 100}%` }} />
+                        </div>
+                      </div>
+                      <span className="text-sm text-muted-foreground">{formatNumber(item.value)}</span>
+                    </div>
+                  )) : <p className="text-muted-foreground text-center py-8">{topLoaded.has("ip") ? "暂无数据" : "加载中..."}</p>}
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* 来源分析 */}
+          <TabsContent value="referer">
+            <Card>
+              <CardHeader><CardTitle>Referer 来源 TOP 10</CardTitle></CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  {(topData.referer?.length ?? 0) > 0 ? (() => {
+                    const total = topData.referer.reduce((s, d) => s + d.value, 0);
+                    return topData.referer.map((item, i) => (
+                      <div key={i} className="flex items-center gap-4">
+                        <span className="w-6 text-center font-medium text-muted-foreground">{i + 1}</span>
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2">
+                            <p className="text-sm font-mono truncate" title={item.name}>{item.name || "(直接访问)"}</p>
+                            <span className="text-xs text-muted-foreground">({total > 0 ? ((item.value / total) * 100).toFixed(1) : 0}%)</span>
+                          </div>
+                          <div className="h-2 bg-muted rounded-full mt-1">
+                            <div className="h-full bg-amber-500 rounded-full" style={{ width: `${(item.value / (topData.referer[0]?.value || 1)) * 100}%` }} />
+                          </div>
+                        </div>
+                        <span className="text-sm text-muted-foreground whitespace-nowrap">{formatBytes(item.value)}</span>
+                      </div>
+                    ));
+                  })() : <p className="text-muted-foreground text-center py-8">{topLoaded.has("referer") ? "暂无数据" : "加载中..."}</p>}
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
           </Tabs>
         </ResponsiveTabs>
       </main>

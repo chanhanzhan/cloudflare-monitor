@@ -219,14 +219,16 @@ export default function EOZoneDetailPage() {
 
   /*
   parseSecurityData 解析安全防护数据
-  @功能 解析 Data[].Value[].Detail[] 格式
+  @功能 兼容 Data[].Value[].Detail[] 和 Data[].TypeValue[].Detail[] 两种格式
   */
   const parseSecurityData = (data: any) => {
     const result: TrafficData[] = [];
     let total = 0;
     data.Data?.forEach((item: any) => {
-      item.Value?.forEach((v: any) => {
-        v.Detail?.forEach((d: any) => {
+      /* 兼容 Value 和 TypeValue 两种字段名 */
+      const values = item.Value || item.TypeValue || [];
+      values.forEach((v: any) => {
+        (v.Detail || []).forEach((d: any) => {
           result.push({
             time: new Date(d.Timestamp * 1000).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }),
             value: d.Value
@@ -235,6 +237,19 @@ export default function EOZoneDetailPage() {
         });
       });
     });
+    /* 如果以上格式都没匹配到，尝试 Data[].Detail[] 直接格式 */
+    if (result.length === 0) {
+      data.Data?.forEach((item: any) => {
+        (item.Detail || item.List || []).forEach((d: any) => {
+          const val = d.Value || d.Count || 0;
+          result.push({
+            time: new Date((d.Timestamp || 0) * 1000).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }),
+            value: val,
+          });
+          total += val;
+        });
+      });
+    }
     return { data: result, total };
   };
 
@@ -366,16 +381,27 @@ export default function EOZoneDetailPage() {
         if (perf.data.length > 0) setAvgResponseTime(perf.total / perf.data.length);
         if (firstByte.data.length > 0) setAvgFirstByteTime(firstByte.total / firstByte.data.length);
 
-        /* 安全 */
+        /* 安全：合并三个来源的时序数据 */
         const securityResult = parseSecurityData(securityJson);
         const securityAclResult = parseSecurityData(securityAclJson);
         const securityRateResult = parseSecurityData(securityRateJson);
-        setSecurityData(securityResult.data);
-        setSecurityAclData(securityAclResult.data);
-        setSecurityRateData(securityRateResult.data);
         setTotalSecurityHits(securityResult.total);
         setTotalAclHits(securityAclResult.total);
         setTotalRateHits(securityRateResult.total);
+
+        /* 按时间戳合并所有安全数据点 */
+        const mergedSecMap = new Map<string, number>();
+        [securityResult.data, securityAclResult.data, securityRateResult.data].forEach((arr) => {
+          arr.forEach((d) => {
+            mergedSecMap.set(d.time, (mergedSecMap.get(d.time) || 0) + d.value);
+          });
+        });
+        const mergedSecurity = Array.from(mergedSecMap.entries())
+          .map(([time, value]) => ({ time, value }))
+          .sort((a, b) => a.time.localeCompare(b.time));
+        setSecurityData(mergedSecurity.length > 0 ? mergedSecurity : securityAclResult.data.length > 0 ? securityAclResult.data : securityResult.data);
+        setSecurityAclData(securityAclResult.data);
+        setSecurityRateData(securityRateResult.data);
 
         /* 边缘函数 */
         if (edgeFuncJson) {
@@ -953,21 +979,29 @@ export default function EOZoneDetailPage() {
                 </div>
               </CardContent>
             </Card>
-            <div className="grid gap-4 md:grid-cols-2">
-              <Card className="bg-gradient-to-br from-red-500/5 to-transparent">
-                <CardContent className="p-6">
-                  <div className="text-center">
-                    <p className="text-sm text-muted-foreground mb-2">总拦截次数</p>
-                    <p className="text-3xl font-bold text-red-500">{formatNumber(totalSecurityHits)}</p>
-                  </div>
+            <div className="grid gap-3 sm:gap-4 grid-cols-2 lg:grid-cols-4">
+              <Card className="bg-gradient-to-br from-red-500/10 to-red-600/5 border-red-500/20">
+                <CardContent className="p-4 sm:p-6">
+                  <p className="text-xs text-muted-foreground uppercase tracking-wide">总拦截次数</p>
+                  <p className="text-xl sm:text-2xl font-bold text-red-600 dark:text-red-400">{formatNumber(totalSecurityHits + totalAclHits + totalRateHits)}</p>
                 </CardContent>
               </Card>
-              <Card className="bg-gradient-to-br from-green-500/5 to-transparent">
-                <CardContent className="p-6">
-                  <div className="text-center">
-                    <p className="text-sm text-muted-foreground mb-2">防护状态</p>
-                    <p className="text-3xl font-bold text-green-500">已启用</p>
-                  </div>
+              <Card className="bg-gradient-to-br from-orange-500/10 to-orange-600/5 border-orange-500/20">
+                <CardContent className="p-4 sm:p-6">
+                  <p className="text-xs text-muted-foreground uppercase tracking-wide">CC 管理拦截</p>
+                  <p className="text-xl sm:text-2xl font-bold text-orange-600 dark:text-orange-400">{formatNumber(totalSecurityHits)}</p>
+                </CardContent>
+              </Card>
+              <Card className="bg-gradient-to-br from-blue-500/10 to-blue-600/5 border-blue-500/20">
+                <CardContent className="p-4 sm:p-6">
+                  <p className="text-xs text-muted-foreground uppercase tracking-wide">ACL 规则拦截</p>
+                  <p className="text-xl sm:text-2xl font-bold text-blue-600 dark:text-blue-400">{formatNumber(totalAclHits)}</p>
+                </CardContent>
+              </Card>
+              <Card className="bg-gradient-to-br from-purple-500/10 to-purple-600/5 border-purple-500/20">
+                <CardContent className="p-4 sm:p-6">
+                  <p className="text-xs text-muted-foreground uppercase tracking-wide">速率限制拦截</p>
+                  <p className="text-xl sm:text-2xl font-bold text-purple-600 dark:text-purple-400">{formatNumber(totalRateHits)}</p>
                 </CardContent>
               </Card>
             </div>

@@ -1,5 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  /* 禁用压缩以支持流式响应实时推送 */
+  compress: false,
   /*
   images 禁用图片优化以兼容边缘部署平台
   @功能 Cloudflare Pages / 腾讯云 EdgeOne Pages 不支持 Next.js 原生图片优化

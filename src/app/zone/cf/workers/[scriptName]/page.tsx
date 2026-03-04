@@ -22,6 +22,9 @@ WORKER_TAB_ITEMS Workers 详情页标签项定义
 */
 const WORKER_TAB_ITEMS = [
   { value: "overview", label: "概览" },
+  { value: "trends", label: "请求趋势" },
+  { value: "errors", label: "错误分析" },
+  { value: "cpu", label: "CPU 性能" },
   { value: "quota", label: "配额使用" },
   { value: "comparison", label: "Workers 对比" },
 ];
@@ -59,9 +62,31 @@ export default function WorkerDetailPage() {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("overview");
 
+  /* 时序数据状态 */
+  const [timeseries, setTimeseries] = useState<{ time: string; requests: number; errors: number; subrequests: number; cpuP50: number; cpuP99: number; errorRate: number }[]>([]);
+  const [statusDist, setStatusDist] = useState<{ name: string; value: number }[]>([]);
+  const [tsLoaded, setTsLoaded] = useState(false);
+
   useEffect(() => {
     fetchWorkerData();
   }, [scriptName]);
+
+  /*
+  懒加载时序数据 - 切换到趋势/错误/CPU标签时触发
+  @功能 获取按小时分组的请求/错误/CPU时序数据和状态分布
+  */
+  useEffect(() => {
+    if (tsLoaded || !scriptName || loading) return;
+    if (!["trends", "errors", "cpu"].includes(activeTab)) return;
+    setTsLoaded(true);
+    fetch(`/api/cf/workers/timeseries?scriptName=${encodeURIComponent(scriptName)}`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.timeseries) setTimeseries(data.timeseries);
+        if (data.statusDistribution) setStatusDist(data.statusDistribution);
+      })
+      .catch((err) => console.error("Workers timeseries error:", err));
+  }, [activeTab, scriptName, loading, tsLoaded]);
 
   const fetchWorkerData = async () => {
     setLoading(true);
@@ -338,6 +363,179 @@ export default function WorkerDetailPage() {
                 </CardContent>
               </Card>
             </div>
+          </TabsContent>
+
+          {/* 请求趋势 */}
+          <TabsContent value="trends" className="space-y-4">
+            {timeseries.length > 0 ? (
+              <>
+                <Card>
+                  <CardHeader><CardTitle>请求数趋势 (24h)</CardTitle></CardHeader>
+                  <CardContent>
+                    <div className="h-[300px] sm:h-[400px]">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={timeseries}>
+                          <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                          <XAxis dataKey="time" tick={{ fontSize: 10 }} />
+                          <YAxis tickFormatter={(v) => formatNumber(v)} tick={{ fontSize: 10 }} />
+                          <Tooltip formatter={(v: number) => formatNumber(v)} />
+                          <Bar dataKey="requests" fill="#F6821F" name="请求数" />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardHeader><CardTitle>子请求趋势 (24h)</CardTitle></CardHeader>
+                  <CardContent>
+                    <div className="h-[250px] sm:h-[300px]">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={timeseries}>
+                          <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                          <XAxis dataKey="time" tick={{ fontSize: 10 }} />
+                          <YAxis tickFormatter={(v) => formatNumber(v)} tick={{ fontSize: 10 }} />
+                          <Tooltip formatter={(v: number) => formatNumber(v)} />
+                          <Line type="monotone" dataKey="subrequests" stroke="#3B82F6" strokeWidth={2} dot={false} name="子请求" />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </CardContent>
+                </Card>
+              </>
+            ) : (
+              <Card><CardContent className="py-12 text-center text-muted-foreground">{tsLoaded ? "暂无时序数据" : "加载中..."}</CardContent></Card>
+            )}
+          </TabsContent>
+
+          {/* 错误分析 */}
+          <TabsContent value="errors" className="space-y-4">
+            {timeseries.length > 0 || statusDist.length > 0 ? (
+              <>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Card>
+                    <CardHeader><CardTitle>错误数趋势 (24h)</CardTitle></CardHeader>
+                    <CardContent>
+                      <div className="h-[250px] sm:h-[300px]">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={timeseries}>
+                            <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                            <XAxis dataKey="time" tick={{ fontSize: 10 }} />
+                            <YAxis tickFormatter={(v) => formatNumber(v)} tick={{ fontSize: 10 }} />
+                            <Tooltip formatter={(v: number) => formatNumber(v)} />
+                            <Bar dataKey="errors" fill="#EF4444" name="错误数" />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardHeader><CardTitle>错误率趋势 (24h)</CardTitle></CardHeader>
+                    <CardContent>
+                      <div className="h-[250px] sm:h-[300px]">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart data={timeseries}>
+                            <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                            <XAxis dataKey="time" tick={{ fontSize: 10 }} />
+                            <YAxis tickFormatter={(v) => `${v.toFixed(1)}%`} tick={{ fontSize: 10 }} />
+                            <Tooltip formatter={(v: number) => `${v.toFixed(2)}%`} />
+                            <Line type="monotone" dataKey="errorRate" stroke="#F59E0B" strokeWidth={2} dot={false} name="错误率" />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+                {/* 状态分布 */}
+                {statusDist.length > 0 && (
+                  <Card>
+                    <CardHeader><CardTitle>请求状态分布 (24h)</CardTitle></CardHeader>
+                    <CardContent>
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <div className="h-[250px]">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <PieChart>
+                              <Pie data={statusDist} cx="50%" cy="50%" innerRadius={50} outerRadius={90} dataKey="value" label={({ name, percent }) => `${name} ${(percent * 100).toFixed(1)}%`}>
+                                {statusDist.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
+                              </Pie>
+                              <Tooltip formatter={(v: number) => formatNumber(v)} />
+                            </PieChart>
+                          </ResponsiveContainer>
+                        </div>
+                        <div className="space-y-3">
+                          {statusDist.map((item, i) => (
+                            <div key={i} className="flex items-center gap-4">
+                              <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: COLORS[i % COLORS.length] }} />
+                              <div className="flex-1">
+                                <p className="text-sm font-medium">{item.name}</p>
+                                <div className="h-2 bg-muted rounded-full mt-1">
+                                  <div className="h-full rounded-full" style={{ width: `${(item.value / (statusDist[0]?.value || 1)) * 100}%`, backgroundColor: COLORS[i % COLORS.length] }} />
+                                </div>
+                              </div>
+                              <span className="text-sm text-muted-foreground">{formatNumber(item.value)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+              </>
+            ) : (
+              <Card><CardContent className="py-12 text-center text-muted-foreground">{tsLoaded ? "暂无错误数据" : "加载中..."}</CardContent></Card>
+            )}
+          </TabsContent>
+
+          {/* CPU 性能 */}
+          <TabsContent value="cpu" className="space-y-4">
+            {timeseries.length > 0 ? (
+              <>
+                <div className="grid gap-3 sm:gap-4 grid-cols-2 lg:grid-cols-4">
+                  <Card className="bg-gradient-to-br from-purple-500/10 to-purple-600/5 border-purple-500/20">
+                    <CardContent className="p-4 sm:p-6">
+                      <p className="text-xs text-muted-foreground uppercase tracking-wide">CPU P50</p>
+                      <p className="text-lg sm:text-2xl font-bold text-purple-600 dark:text-purple-400">{(worker?.cpuTimeP50 || 0) / 1000} ms</p>
+                    </CardContent>
+                  </Card>
+                  <Card className="bg-gradient-to-br from-cyan-500/10 to-cyan-600/5 border-cyan-500/20">
+                    <CardContent className="p-4 sm:p-6">
+                      <p className="text-xs text-muted-foreground uppercase tracking-wide">CPU P99</p>
+                      <p className="text-lg sm:text-2xl font-bold text-cyan-600 dark:text-cyan-400">{(worker?.cpuTimeP99 || 0) / 1000} ms</p>
+                    </CardContent>
+                  </Card>
+                  <Card className="bg-gradient-to-br from-green-500/10 to-green-600/5 border-green-500/20">
+                    <CardContent className="p-4 sm:p-6">
+                      <p className="text-xs text-muted-foreground uppercase tracking-wide">P50 趋势最大值</p>
+                      <p className="text-lg sm:text-2xl font-bold text-green-600 dark:text-green-400">{timeseries.length > 0 ? Math.max(...timeseries.map(d => d.cpuP50)).toFixed(2) : 0} ms</p>
+                    </CardContent>
+                  </Card>
+                  <Card className="bg-gradient-to-br from-orange-500/10 to-orange-600/5 border-orange-500/20">
+                    <CardContent className="p-4 sm:p-6">
+                      <p className="text-xs text-muted-foreground uppercase tracking-wide">P99 趋势最大值</p>
+                      <p className="text-lg sm:text-2xl font-bold text-orange-600 dark:text-orange-400">{timeseries.length > 0 ? Math.max(...timeseries.map(d => d.cpuP99)).toFixed(2) : 0} ms</p>
+                    </CardContent>
+                  </Card>
+                </div>
+                <Card>
+                  <CardHeader><CardTitle>CPU 时间趋势 (24h)</CardTitle></CardHeader>
+                  <CardContent>
+                    <div className="h-[300px] sm:h-[400px]">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={timeseries}>
+                          <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                          <XAxis dataKey="time" tick={{ fontSize: 10 }} />
+                          <YAxis tickFormatter={(v) => `${v} ms`} tick={{ fontSize: 10 }} />
+                          <Tooltip formatter={(v: number) => `${v.toFixed(2)} ms`} />
+                          <Line type="monotone" dataKey="cpuP50" stroke="#8B5CF6" strokeWidth={2} dot={false} name="CPU P50" />
+                          <Line type="monotone" dataKey="cpuP99" stroke="#06B6D4" strokeWidth={2} dot={false} name="CPU P99" />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </CardContent>
+                </Card>
+              </>
+            ) : (
+              <Card><CardContent className="py-12 text-center text-muted-foreground">{tsLoaded ? "暂无 CPU 数据" : "加载中..."}</CardContent></Card>
+            )}
           </TabsContent>
 
           <TabsContent value="quota" className="space-y-4">

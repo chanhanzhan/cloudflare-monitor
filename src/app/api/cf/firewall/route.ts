@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
+import * as cache from "@/lib/cache";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+const CACHE_TTL = 3 * 60 * 1000;
 
 /*
 parseAccountConfigs 解析 Cloudflare 账户配置
@@ -38,39 +41,38 @@ function parseAccountConfigs(): AccountConfig[] {
 }
 
 /*
-fetchFirewallEvents 获取 Cloudflare 防火墙事件数据
-@功能 通过 GraphQL API 获取指定 zone 的防火墙事件汇总（按 action、source、country 等维度）
+fetchFirewallEventsRaw 获取防火墙事件原始记录（非聚合）
 @param headers 认证头
 @param zoneId 站点 ID
 @param since 开始时间
 @param until 结束时间
-@return 防火墙事件汇总数据
+@return { events: 事件数组, authzError: 是否权限错误 }
 */
-async function fetchFirewallEvents(
+async function fetchFirewallEventsRaw(
   headers: Record<string, string>,
   zoneId: string,
   since: string,
   until: string
-) {
+): Promise<{ events: any[]; authzError: boolean }> {
   const query = `
     query($zone: String!, $since: Time!, $until: Time!) {
       viewer {
         zones(filter: {zoneTag: $zone}) {
-          firewallEventsAdaptiveGroups(
+          firewallEventsAdaptive(
             filter: {datetime_geq: $since, datetime_leq: $until}
-            limit: 100
-            orderBy: [count_DESC]
+            limit: 200
+            orderBy: [datetime_DESC]
           ) {
-            count
-            dimensions {
-              action
-              source
-              clientCountryName
-              clientIP
-              clientRequestHTTPHost
-              clientRequestPath
-              ruleId
-            }
+            action
+            source
+            clientCountryName
+            clientIP
+            clientRequestPath
+            clientRequestHTTPHost
+            clientRequestHTTPMethodName
+            datetime
+            ruleId
+            userAgent
           }
         }
       }
@@ -80,17 +82,142 @@ async function fetchFirewallEvents(
     const res = await fetch("https://api.cloudflare.com/client/v4/graphql", {
       method: "POST",
       headers,
-      body: JSON.stringify({
-        query,
-        variables: { zone: zoneId, since, until },
-      }),
+      body: JSON.stringify({ query, variables: { zone: zoneId, since, until } }),
     });
-    const data = await res.json();
-    return data.data?.viewer?.zones?.[0]?.firewallEventsAdaptiveGroups || [];
+    const json = await res.json();
+    if (json.errors) {
+      const isAuthz = json.errors.some((e: any) => e.extensions?.code === "authz");
+      if (isAuthz) return { events: [], authzError: true };
+      console.warn(`Firewall events query errors:`, JSON.stringify(json.errors));
+      return { events: [], authzError: false };
+    }
+    return {
+      events: json.data?.viewer?.zones?.[0]?.firewallEventsAdaptive || [],
+      authzError: false,
+    };
   } catch (error) {
-    console.error("Firewall events fetch error:", error);
-    return [];
+    console.error(`Firewall events fetch error:`, error);
+    return { events: [], authzError: false };
   }
+}
+
+/*
+防火墙动作中文映射
+*/
+const ACTION_MAP: Record<string, string> = {
+  block: "拦截", challenge: "质询", jschallenge: "JS质询",
+  managedchallenge: "托管质询", managed_challenge: "托管质询",
+  log: "日志记录", allow: "放行", bypass: "绕过",
+  connectionclose: "关闭连接", skip: "跳过",
+  challengesolved: "质询已解决", challengebypassed: "质询已绕过",
+  jschallengesolved: "JS质询已解决", jschallengebypassed: "JS质询已绕过",
+  managedchallengenoninteractivesolved: "托管质询(非交互)已解决",
+  managedchallengeinteractivesolved: "托管质询(交互)已解决",
+  managedchallengebypassed: "托管质询已绕过",
+  link_maze_injected: "链接迷宫注入",
+};
+
+/*
+防火墙规则来源中文映射
+*/
+const SOURCE_MAP: Record<string, string> = {
+  waf: "WAF 托管规则", firewallrules: "防火墙规则",
+  ratelimit: "速率限制", bic: "浏览器完整性检查",
+  hot: "热链接保护", securitylevel: "安全级别",
+  zonelockdown: "区域锁定", uablock: "UA 拦截",
+  ipAccessRules: "IP 访问规则", asn: "ASN 规则",
+  country: "国家规则", managed_rules: "托管规则",
+  botFight: "Bot Fight 模式", linkMaze: "链接迷宫",
+  botManagement: "Bot 管理", apiShield: "API Shield",
+  dlp: "数据防泄漏", l7ddos: "L7 DDoS 防护",
+  sanitycheck: "健全性检查",
+};
+
+/*
+国家代码中文映射（常见国家）
+*/
+const COUNTRY_MAP: Record<string, string> = {
+  CN: "中国", US: "美国", JP: "日本", KR: "韩国", SG: "新加坡",
+  HK: "中国香港", TW: "中国台湾", MO: "中国澳门", DE: "德国", FR: "法国",
+  GB: "英国", CA: "加拿大", AU: "澳大利亚", IN: "印度", BR: "巴西",
+  RU: "俄罗斯", NL: "荷兰", IT: "意大利", ES: "西班牙", SE: "瑞典",
+  CH: "瑞士", PL: "波兰", ID: "印度尼西亚", TH: "泰国", VN: "越南",
+  MY: "马来西亚", PH: "菲律宾", FI: "芬兰", NO: "挪威", DK: "丹麦",
+  IE: "爱尔兰", PT: "葡萄牙", GR: "希腊", NZ: "新西兰", AR: "阿根廷",
+  MX: "墨西哥", ZA: "南非", AE: "阿联酋", SA: "沙特阿拉伯", TR: "土耳其",
+  UA: "乌克兰", IL: "以色列", EG: "埃及", NG: "尼日利亚", KE: "肯尼亚",
+  CL: "智利", CO: "哥伦比亚", CZ: "捷克", AT: "奥地利", BE: "比利时",
+  RO: "罗马尼亚", HU: "匈牙利", BG: "保加利亚", RS: "塞尔维亚",
+  HR: "克罗地亚", SK: "斯洛伐克", LT: "立陶宛", LV: "拉脱维亚",
+  EE: "爱沙尼亚", BD: "孟加拉", PK: "巴基斯坦", LK: "斯里兰卡",
+  MM: "缅甸", KH: "柬埔寨", LA: "老挝", NP: "尼泊尔",
+};
+
+/*
+aggregateFirewallEvents 将原始防火墙事件按多维度聚合，并汉化名称
+@param events 原始事件数组
+@return 聚合后的数据对象
+*/
+function aggregateFirewallEvents(events: any[]) {
+  const actionMap: Record<string, number> = {};
+  const sourceMap: Record<string, number> = {};
+  const countryMap: Record<string, number> = {};
+  const ipMap: Record<string, number> = {};
+  const pathMap: Record<string, number> = {};
+  const hostMap: Record<string, number> = {};
+  const methodMap: Record<string, number> = {};
+  const recentEvents: any[] = [];
+
+  events.forEach((e: any) => {
+    if (e.action) {
+      const label = ACTION_MAP[e.action] || e.action;
+      actionMap[label] = (actionMap[label] || 0) + 1;
+    }
+    if (e.source) {
+      const label = SOURCE_MAP[e.source] || e.source;
+      sourceMap[label] = (sourceMap[label] || 0) + 1;
+    }
+    if (e.clientCountryName) {
+      const label = COUNTRY_MAP[e.clientCountryName] || e.clientCountryName;
+      countryMap[label] = (countryMap[label] || 0) + 1;
+    }
+    if (e.clientIP) ipMap[e.clientIP] = (ipMap[e.clientIP] || 0) + 1;
+    if (e.clientRequestPath) pathMap[e.clientRequestPath] = (pathMap[e.clientRequestPath] || 0) + 1;
+    if (e.clientRequestHTTPHost) hostMap[e.clientRequestHTTPHost] = (hostMap[e.clientRequestHTTPHost] || 0) + 1;
+    if (e.clientRequestHTTPMethodName) methodMap[e.clientRequestHTTPMethodName] = (methodMap[e.clientRequestHTTPMethodName] || 0) + 1;
+    if (recentEvents.length < 20) {
+      recentEvents.push({
+        time: e.datetime,
+        action: ACTION_MAP[e.action] || e.action,
+        source: SOURCE_MAP[e.source] || e.source,
+        ip: e.clientIP,
+        country: COUNTRY_MAP[e.clientCountryName] || e.clientCountryName,
+        path: e.clientRequestPath,
+        host: e.clientRequestHTTPHost,
+        method: e.clientRequestHTTPMethodName,
+        ua: e.userAgent,
+        ruleId: e.ruleId,
+      });
+    }
+  });
+
+  const toSorted = (map: Record<string, number>, key: string) =>
+    Object.entries(map)
+      .map(([k, v]) => ({ [key]: k, count: v }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10);
+
+  return {
+    byAction: toSorted(actionMap, "action"),
+    bySource: toSorted(sourceMap, "source"),
+    byCountry: toSorted(countryMap, "country"),
+    byIP: toSorted(ipMap, "ip"),
+    byPath: toSorted(pathMap, "path"),
+    byHost: toSorted(hostMap, "host"),
+    byMethod: toSorted(methodMap, "method"),
+    recentEvents,
+    totalEvents: events.length,
+  };
 }
 
 /*
@@ -114,13 +241,17 @@ async function fetchAllZoneIds(headers: Record<string, string>) {
 
 export async function GET(request: NextRequest) {
   try {
+    const { searchParams } = new URL(request.url);
+    const targetDomain = searchParams.get("domain");
+
+    const cacheKey = `cf_firewall_${targetDomain || "all"}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return NextResponse.json(cached);
+
     const accountConfigs = parseAccountConfigs();
     if (accountConfigs.length === 0) {
       return NextResponse.json({ error: "请配置 CF_API_KEY 和 CF_EMAIL", accounts: [] });
     }
-
-    const { searchParams } = new URL(request.url);
-    const targetDomain = searchParams.get("domain");
 
     const now = new Date();
     const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
@@ -160,67 +291,32 @@ export async function GET(request: NextRequest) {
         zones: [],
       };
 
-      for (const zone of filteredZones) {
-        const rawEvents = await fetchFirewallEvents(headers, zone.id, since, until);
+        /* 并行获取所有 zone 的防火墙数据 */
+      const zonePromises = filteredZones.map(async (zone: { id: string; name: string }) => {
+        const result = await fetchFirewallEventsRaw(headers, zone.id, since, until);
 
-        /* 按各维度聚合防火墙事件 */
-        const actionMap: Record<string, number> = {};
-        const sourceMap: Record<string, number> = {};
-        const countryMap: Record<string, number> = {};
-        const ipMap: Record<string, number> = {};
-        const hostMap: Record<string, number> = {};
-        const pathMap: Record<string, number> = {};
-        let totalEvents = 0;
+        if (result.authzError) {
+          return {
+            domain: zone.name,
+            events: null,
+            error: "当前套餐不支持防火墙事件分析，需要 Pro 或更高级别套餐",
+          };
+        }
 
-        rawEvents.forEach((e: any) => {
-          const count = e.count || 0;
-          totalEvents += count;
-          const d = e.dimensions || {};
-
-          if (d.action) {
-            actionMap[d.action] = (actionMap[d.action] || 0) + count;
-          }
-          if (d.source) {
-            sourceMap[d.source] = (sourceMap[d.source] || 0) + count;
-          }
-          if (d.clientCountryName) {
-            countryMap[d.clientCountryName] = (countryMap[d.clientCountryName] || 0) + count;
-          }
-          if (d.clientIP) {
-            ipMap[d.clientIP] = (ipMap[d.clientIP] || 0) + count;
-          }
-          if (d.clientRequestHTTPHost) {
-            hostMap[d.clientRequestHTTPHost] = (hostMap[d.clientRequestHTTPHost] || 0) + count;
-          }
-          if (d.clientRequestPath) {
-            pathMap[d.clientRequestPath] = (pathMap[d.clientRequestPath] || 0) + count;
-          }
-        });
-
-        const toSorted = (map: Record<string, number>, key: string) =>
-          Object.entries(map)
-            .map(([k, v]) => ({ [key]: k, count: v }))
-            .sort((a, b) => b.count - a.count)
-            .slice(0, 10);
-
-        accountData.zones.push({
+        return {
           domain: zone.name,
-          events: {
-            byAction: toSorted(actionMap, "action") as { action: string; count: number }[],
-            bySource: toSorted(sourceMap, "source") as { source: string; count: number }[],
-            byCountry: toSorted(countryMap, "country") as { country: string; count: number }[],
-            byIP: toSorted(ipMap, "ip") as { ip: string; count: number }[],
-            byHost: toSorted(hostMap, "host") as { host: string; count: number }[],
-            byPath: toSorted(pathMap, "path") as { path: string; count: number }[],
-            totalEvents,
-          },
-        });
-      }
+          events: aggregateFirewallEvents(result.events),
+        };
+      });
+
+      accountData.zones = await Promise.all(zonePromises);
 
       allAccounts.push(accountData);
     }
 
-    return NextResponse.json({ accounts: allAccounts });
+    const payload = { accounts: allAccounts };
+    cache.set(cacheKey, payload, CACHE_TTL);
+    return NextResponse.json(payload);
   } catch (error) {
     console.error("CF Firewall API error:", error);
     return NextResponse.json(

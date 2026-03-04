@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
+import * as cache from "@/lib/cache";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+const CACHE_KEY = "cf_workers";
+const CACHE_TTL = 3 * 60 * 1000;
 
 interface AccountConfig {
   name: string;
@@ -206,6 +210,9 @@ async function fetchWorkersAnalytics(
 
 export async function GET(request: NextRequest) {
   try {
+    const cached = cache.get(CACHE_KEY);
+    if (cached) return NextResponse.json(cached);
+
     const accountConfigs = parseAccountConfigs();
 
     if (accountConfigs.length === 0) {
@@ -261,12 +268,14 @@ export async function GET(request: NextRequest) {
     const totalRequests = allWorkers.reduce((sum, a) => sum + a.totalRequests, 0);
     const totalErrors = allWorkers.reduce((sum, a) => sum + a.totalErrors, 0);
 
-    return NextResponse.json({ 
+    const payload = { 
       accounts: allWorkers,
       totalRequests,
       totalErrors,
       totalWorkers: allWorkers.reduce((sum, a) => sum + a.workers.length, 0),
-    });
+    };
+    cache.set(CACHE_KEY, payload, CACHE_TTL);
+    return NextResponse.json(payload);
   } catch (error) {
     console.error("Workers API error:", error);
     return NextResponse.json(

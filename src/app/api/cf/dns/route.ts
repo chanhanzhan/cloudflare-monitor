@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
+import * as cache from "@/lib/cache";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+const CACHE_TTL = 3 * 60 * 1000;
 
 /*
 CF DNS 查询统计 API
@@ -100,13 +103,16 @@ async function fetchDnsAnalytics(
 
 export async function GET(request: NextRequest) {
   try {
+    const { searchParams } = new URL(request.url);
+    const targetDomain = searchParams.get("domain");
+    const cacheKey = `cf_dns_${targetDomain || "all"}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return NextResponse.json(cached);
+
     const accountConfigs = parseAccountConfigs();
     if (accountConfigs.length === 0) {
       return NextResponse.json({ error: "请配置 CF_API_KEY 和 CF_EMAIL", accounts: [] });
     }
-
-    const { searchParams } = new URL(request.url);
-    const targetDomain = searchParams.get("domain");
 
     const now = new Date();
     const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
@@ -188,7 +194,9 @@ export async function GET(request: NextRequest) {
       allAccounts.push(accountData);
     }
 
-    return NextResponse.json({ accounts: allAccounts });
+    const payload = { accounts: allAccounts };
+    cache.set(cacheKey, payload, CACHE_TTL);
+    return NextResponse.json(payload);
   } catch (error) {
     console.error("CF DNS API error:", error);
     return NextResponse.json(

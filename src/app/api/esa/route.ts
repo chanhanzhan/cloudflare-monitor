@@ -2,9 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import ESA20240910, * as $ESA20240910 from "@alicloud/esa20240910";
 import * as $OpenApi from "@alicloud/openapi-client";
+import * as cache from "@/lib/cache";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+const CACHE_TTL = 3 * 60 * 1000;
 
 interface ESAAccountConfig {
   name: string;
@@ -379,6 +382,10 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const fetchDetails = searchParams.get("details") === "true";
     const skipTimeSeries = searchParams.get("skipTimeSeries") === "true";
+
+    const cacheKey = `esa_${fetchDetails ? "full" : skipTimeSeries ? "skip" : "default"}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return NextResponse.json(cached);
     
     const accounts = parseESAAccounts();
     if (accounts.length === 0) {
@@ -566,6 +573,7 @@ export async function GET(request: NextRequest) {
       });
     }
 
+    cache.set(cacheKey, payload, CACHE_TTL);
     return NextResponse.json(payload);
   } catch (error) {
     console.error("ESA API error:", error);

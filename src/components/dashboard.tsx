@@ -75,12 +75,58 @@ export function Dashboard() {
     setEsaLoading(true);
     setError(null);
 
-    // Fetch each API independently - render as soon as each completes
-    fetch("/api/cf/analytics")
-      .then((r) => r.json())
-      .then((cfRes) => setCfData(cfRes))
-      .catch(() => setCfData({ accounts: [] }))
-      .finally(() => setCfLoading(false));
+    /* CF analytics 流式读取：每个 zone 完成后立即渲染 */
+    (async () => {
+      try {
+        const r = await fetch("/api/cf/analytics");
+        const contentType = r.headers.get("content-type") || "";
+
+        if (!contentType.includes("application/json") && r.body) {
+          /* 流式 NDJSON 响应：逐批接收 zone 数据 */
+          const reader = r.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          let totalZones = 0;
+          let loadedZones = 0;
+          const accountMap = new Map<string, unknown[]>();
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+
+            for (const line of lines) {
+              if (!line.trim()) continue;
+              try {
+                const msg = JSON.parse(line);
+                if (msg.type === "init") {
+                  totalZones = msg.total || 0;
+                } else if (msg.type === "zone") {
+                  const acc = msg.account as string;
+                  if (!accountMap.has(acc)) accountMap.set(acc, []);
+                  accountMap.get(acc)!.push(msg.zone);
+                  loadedZones++;
+                  /* 每收到 zone 就更新状态触发渲染 */
+                  const accounts = Array.from(accountMap.entries()).map(([name, zones]) => ({ name, zones })) as CFAnalyticsData["accounts"];
+                  setCfData({ accounts });
+                }
+              } catch {}
+            }
+          }
+          setCfLoading(false);
+        } else {
+          /* 普通 JSON 响应（缓存命中时） */
+          const cfRes = await r.json();
+          setCfData(cfRes);
+          setCfLoading(false);
+        }
+      } catch {
+        setCfData({ accounts: [] });
+        setCfLoading(false);
+      }
+    })();
 
     fetch("/api/cf/workers")
       .then((r) => r.json())
@@ -333,7 +379,9 @@ export function Dashboard() {
           <div className="flex items-center justify-center min-h-[40vh]">
             <div className="text-center space-y-3">
               <div className="animate-spin rounded-full h-8 w-8 border-2 border-primary border-t-transparent mx-auto"></div>
-              <p className="text-sm text-muted-foreground">加载中...</p>
+              <p className="text-sm text-muted-foreground">
+                {cfData?.accounts?.length ? `Cloudflare 已加载 ${cfData.accounts.reduce((s, a) => s + (a.zones?.length || 0), 0)} 个站点...` : "正在获取数据..."}
+              </p>
             </div>
           </div>
         )}
@@ -394,8 +442,8 @@ export function Dashboard() {
                   />
                 </div>
 
-                {/* Cloudflare Zones */}
-                {cfLoading && (
+                {/* Cloudflare Zones - 流式加载时数据到达即渲染 */}
+                {cfLoading && !hasCfData && (
                   <section className="animate-pulse">
                     <div className="mb-4 flex items-center gap-2">
                       <Cloud className="h-5 w-5 text-cloudflare-orange" />
@@ -408,7 +456,7 @@ export function Dashboard() {
                     </div>
                   </section>
                 )}
-                {!cfLoading && hasCfData && (
+                {hasCfData && (
                   <section>
                     <div className="mb-4 flex items-center gap-2">
                       <Cloud className="h-5 w-5 text-cloudflare-orange" />
