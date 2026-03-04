@@ -67,6 +67,7 @@ const ESA_TAB_ITEMS = [
   { value: "protocol", label: "协议版本" },
   { value: "ip", label: "客户端 IP" },
   { value: "referer", label: "来源分析" },
+  { value: "security", label: "安全防护" },
   { value: "routines", label: "边缘函数" },
 ];
 
@@ -90,9 +91,45 @@ export default function ESASiteDetailPage() {
   const [topData, setTopData] = useState<Record<string, { name: string; value: number }[]>>({});
   const [topLoaded, setTopLoaded] = useState<Set<string>>(new Set());
 
+  /* WAF 安全数据 */
+  const [wafData, setWafData] = useState<any>(null);
+  const [wafLoaded, setWafLoaded] = useState(false);
+
   useEffect(() => {
     fetchSiteData();
   }, [siteId]);
+
+  /*
+  懒加载 WAF 安全数据 - 切换到安全防护标签时触发
+  @功能 获取 WAF 规则集列表和规则使用统计
+  */
+  useEffect(() => {
+    if (activeTab !== "security" || wafLoaded || loading || !site?.SiteId) return;
+    setWafLoaded(true);
+    /* 并行获取 WAF 规则 + 安全相关状态码数据（403/444 作为拦截统计） */
+    const base = `/api/esa/top?siteId=${site.SiteId}`;
+    Promise.all([
+      fetch(`/api/esa/waf?siteId=${site.SiteId}`).then((r) => r.json()),
+      fetch(`${base}&dimension=EdgeResponseStatusCode&fieldName=Requests`).then((r) => r.json()),
+    ]).then(([waf, statusData]) => {
+      /* 从状态码数据中提取安全拦截指标 */
+      const securityCodes = ["403", "444", "503"];
+      const allStatus = statusData.data || [];
+      const blockedRequests = allStatus
+        .filter((s: any) => securityCodes.includes(String(s.name)))
+        .reduce((sum: number, s: any) => sum + (s.value || 0), 0);
+      const totalRequests = allStatus.reduce((sum: number, s: any) => sum + (s.value || 0), 0);
+      setWafData({
+        ...waf,
+        securityStats: {
+          blockedRequests,
+          totalRequests,
+          blockRate: totalRequests > 0 ? ((blockedRequests / totalRequests) * 100).toFixed(2) : "0",
+          statusBreakdown: allStatus.filter((s: any) => securityCodes.includes(String(s.name))),
+        },
+      });
+    }).catch((err) => console.error("ESA WAF error:", err));
+  }, [activeTab, wafLoaded, loading, site]);
 
   const fetchSiteData = async () => {
     setLoading(true);
@@ -1007,6 +1044,109 @@ export default function ESASiteDetailPage() {
                 </div>
               </CardContent>
             </Card>
+          </TabsContent>
+
+          {/* 安全防护 */}
+          <TabsContent value="security" className="space-y-4">
+            {wafData ? (
+              <>
+                {/* 安全拦截统计（基于 403/444/503 状态码） */}
+                <div className="grid gap-3 sm:gap-4 grid-cols-2 lg:grid-cols-4">
+                  <Card className="bg-gradient-to-br from-red-500/10 to-red-600/5 border-red-500/20">
+                    <CardContent className="p-4 sm:p-6">
+                      <p className="text-xs text-muted-foreground uppercase tracking-wide">24h 拦截请求</p>
+                      <p className="text-xl sm:text-2xl font-bold text-red-600 dark:text-red-400">{formatNumber(wafData.securityStats?.blockedRequests || 0)}</p>
+                      <p className="text-xs text-muted-foreground mt-1">403/444/503 状态码</p>
+                    </CardContent>
+                  </Card>
+                  <Card className="bg-gradient-to-br from-orange-500/10 to-orange-600/5 border-orange-500/20">
+                    <CardContent className="p-4 sm:p-6">
+                      <p className="text-xs text-muted-foreground uppercase tracking-wide">拦截率</p>
+                      <p className="text-xl sm:text-2xl font-bold text-orange-600 dark:text-orange-400">{wafData.securityStats?.blockRate || "0"}%</p>
+                      <p className="text-xs text-muted-foreground mt-1">拦截请求/总请求</p>
+                    </CardContent>
+                  </Card>
+                  <Card className="bg-gradient-to-br from-blue-500/10 to-blue-600/5 border-blue-500/20">
+                    <CardContent className="p-4 sm:p-6">
+                      <p className="text-xs text-muted-foreground uppercase tracking-wide">WAF 规则集</p>
+                      <p className="text-xl sm:text-2xl font-bold text-blue-600 dark:text-blue-400">{wafData.summary?.totalRulesets || 0}</p>
+                      <p className="text-xs text-muted-foreground mt-1">{wafData.summary?.enabledRules || 0} 条已启用</p>
+                    </CardContent>
+                  </Card>
+                  <Card className="bg-gradient-to-br from-green-500/10 to-green-600/5 border-green-500/20">
+                    <CardContent className="p-4 sm:p-6">
+                      <p className="text-xs text-muted-foreground uppercase tracking-wide">WAF 规则</p>
+                      <p className="text-xl sm:text-2xl font-bold text-green-600 dark:text-green-400">{wafData.summary?.totalRules || 0}</p>
+                      <p className="text-xs text-muted-foreground mt-1">自定义+托管+频率限制</p>
+                    </CardContent>
+                  </Card>
+                </div>
+                {/* 安全状态码明细 */}
+                {wafData.securityStats?.statusBreakdown?.length > 0 && (
+                  <Card>
+                    <CardHeader><CardTitle className="flex items-center gap-2"><Shield className="h-5 w-5 text-red-500" /> 安全拦截明细 (24h)</CardTitle></CardHeader>
+                    <CardContent>
+                      <div className="space-y-3">
+                        {wafData.securityStats.statusBreakdown.map((item: any, i: number) => {
+                          const codeLabels: Record<string, string> = { "403": "403 禁止访问（WAF 拦截）", "444": "444 无响应关闭（恶意请求）", "503": "503 服务不可用（速率限制）" };
+                          return (
+                            <div key={i} className="flex items-center gap-4">
+                              <span className="w-6 text-center font-medium text-muted-foreground">{i + 1}</span>
+                              <div className="flex-1">
+                                <p className="text-sm font-mono">{codeLabels[String(item.name)] || `${item.name} 状态码`}</p>
+                                <div className="h-2 bg-muted rounded-full mt-1">
+                                  <div className="h-full bg-red-500 rounded-full" style={{ width: `${(item.value / (wafData.securityStats.statusBreakdown[0]?.value || 1)) * 100}%` }} />
+                                </div>
+                              </div>
+                              <span className="text-sm text-muted-foreground">{formatNumber(item.value)}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+                {wafData.rulesets?.filter((p: any) => p.totalCount > 0).map((phase: any, pi: number) => (
+                  <Card key={pi}>
+                    <CardHeader><CardTitle className="flex items-center gap-2"><Shield className="h-5 w-5" /> {phase.phaseZh} ({phase.totalCount} 个规则集)</CardTitle></CardHeader>
+                    <CardContent>
+                      <div className="space-y-4">
+                        {phase.rulesets.map((rs: any, ri: number) => (
+                          <div key={ri} className="border rounded-lg p-4">
+                            <div className="flex items-center justify-between mb-3">
+                              <div className="flex items-center gap-2">
+                                <p className="font-medium">{rs.name || `规则集 ${rs.id}`}</p>
+                                <Badge variant={rs.status === "on" ? "success" : "secondary"}>{rs.status === "on" ? "已启用" : rs.status || "未知"}</Badge>
+                              </div>
+                              <span className="text-xs text-muted-foreground">{rs.rules?.length || 0} 条规则</span>
+                            </div>
+                            {rs.rules?.length > 0 && (
+                              <div className="space-y-2">
+                                {rs.rules.slice(0, 5).map((rule: any, rri: number) => (
+                                  <div key={rri} className="flex items-center justify-between text-sm py-1 border-t border-muted/50">
+                                    <div className="flex items-center gap-2 min-w-0">
+                                      <span className={`w-2 h-2 rounded-full flex-shrink-0 ${rule.status === "on" ? "bg-green-500" : "bg-gray-300"}`} />
+                                      <span className="truncate">{rule.name || `规则 ${rule.id}`}</span>
+                                    </div>
+                                    <Badge variant="outline" className="text-xs flex-shrink-0 ml-2">{rule.action || "未设置"}</Badge>
+                                  </div>
+                                ))}
+                                {rs.rules.length > 5 && <p className="text-xs text-muted-foreground text-center pt-1">还有 {rs.rules.length - 5} 条规则...</p>}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+                {wafData.rulesets?.every((p: any) => p.totalCount === 0) && (
+                  <Card><CardContent className="py-12 text-center text-muted-foreground">暂无 WAF 规则集配置，可在阿里云 ESA 控制台配置安全防护规则</CardContent></Card>
+                )}
+              </>
+            ) : (
+              <Card><CardContent className="py-12 text-center text-muted-foreground">{wafLoaded ? "暂无安全防护数据" : "加载中..."}</CardContent></Card>
+            )}
           </TabsContent>
 
           </Tabs>
